@@ -1,0 +1,28 @@
+[package]
+name = "from2to"
+version = "0.1.0"
+edition = "2024"
+description = "Fast conversion at the terminal: hex2bin, dec2char, hex2b64, and friends"
+license = "MIT"
+repository = "https://github.com/kayfgit/from2to"
+keywords = ["base", "hex", "binary", "ctf", "convert"]
+categories = ["command-line-utilities"]
+
+[lib]
+name = "from2to"
+path = "src/lib.rs"
+
+[[bin]]
+name = "from2to"
+path = "src/main.rs"
+
+[dependencies]
+clap = "4"
+data-encoding = "2"
+num-bigint = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

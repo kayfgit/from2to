@@ -1,5 +1,7 @@
 # from2to
 
+<img width="800" height="400" alt="from2to" src="https://github.com/user-attachments/assets/e93e4775-87fa-48f2-ba11-3e4f4a351fe5" />
+
 Conversion that fits in a pipe. Every command is named for what it does:
 `<from>2<to>`.
 

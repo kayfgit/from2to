@@ -717,21 +717,21 @@ mod tests {
 
     #[test]
     fn dec_to_char_reads_code_points() {
-        assert_eq!(conv("dec", "char", "112\n105\n99\n111"), "pico");
+        assert_eq!(conv("dec", "char", "104\n101\n108\n108\n111"), "hello");
         assert_eq!(conv("dec", "char", "128512"), "\u{1F600}");
     }
 
     #[test]
     fn hex_to_char_reads_bytes() {
-        assert_eq!(conv("hex", "char", "706963"), "pic");
-        assert_eq!(conv("hex", "char", "70 69 63"), "pic");
+        assert_eq!(conv("hex", "char", "68656c6c6f"), "hello");
+        assert_eq!(conv("hex", "char", "68 65 6c 6c 6f"), "hello");
         assert_eq!(conv("bin", "char", "0100000101000010"), "AB");
     }
 
     #[test]
     fn char_to_numbers() {
-        assert_eq!(conv("char", "hex", "picoCTF"), "7069636f435446");
-        assert_eq!(conv("char", "dec", "pico"), "112 105 99 111");
+        assert_eq!(conv("char", "hex", "hello"), "68656c6c6f");
+        assert_eq!(conv("char", "dec", "hello"), "104 101 108 108 111");
         assert_eq!(conv("char", "bin", "A"), "01000001");
         assert_eq!(conv("char", "oct", "A"), "101");
     }
@@ -749,29 +749,29 @@ mod tests {
 
     #[test]
     fn base64_round_trip() {
-        assert_eq!(conv("hex", "b64", "706963"), "cGlj");
-        assert_eq!(conv("b64", "char", "cGljb0NURg=="), "picoCTF");
-        assert_eq!(conv("char", "b64", "picoCTF"), "cGljb0NURg==");
-        assert_eq!(conv("b64", "hex", "cGlj"), "706963");
+        assert_eq!(conv("hex", "b64", "68656c6c6f"), "aGVsbG8=");
+        assert_eq!(conv("b64", "char", "aGVsbG8="), "hello");
+        assert_eq!(conv("char", "b64", "hello"), "aGVsbG8=");
+        assert_eq!(conv("b64", "hex", "aGVsbG8="), "68656c6c6f");
     }
 
     #[test]
     fn base64_tolerates_missing_padding() {
-        assert_eq!(conv("b64", "char", "cGljb0NURg"), "picoCTF");
+        assert_eq!(conv("b64", "char", "aGVsbG8"), "hello");
     }
 
     #[test]
     fn base32_round_trip_and_case_leniency() {
-        let encoded = conv("char", "b32", "pico");
-        assert_eq!(conv("b32", "char", &encoded), "pico");
-        assert_eq!(conv("b32", "char", &encoded.to_ascii_lowercase()), "pico");
+        let encoded = conv("char", "b32", "hello");
+        assert_eq!(conv("b32", "char", &encoded), "hello");
+        assert_eq!(conv("b32", "char", &encoded.to_ascii_lowercase()), "hello");
     }
 
     #[test]
     fn leading_zero_bytes_survive_into_base64() {
-        // 8 hex digits is 4 bytes, so the zero byte must not be dropped.
-        assert_eq!(conv("hex", "b64", "00706963"), "AHBpYw==");
-        assert_eq!(conv("hex", "b64", "706963"), "cGlj");
+        // 12 hex digits is 6 bytes, so the zero byte must not be dropped.
+        assert_eq!(conv("hex", "b64", "0068656c6c6f"), "AGhlbGxv");
+        assert_eq!(conv("hex", "b64", "68656c6c6f"), "aGVsbG8=");
     }
 
     // ---- formatting options

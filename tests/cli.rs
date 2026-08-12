@@ -81,7 +81,7 @@ fn converts_values_given_as_arguments() {
     assert_eq!(run(&["16", "2", "0f"]).out(), "00001111");
     assert_eq!(run(&["16", "2", "-W", "0f"]).out(), "1111");
     assert_eq!(run(&["36", "10", "zz"]).out(), "1295");
-    assert_eq!(run(&["16", "b64", "706963"]).out(), "cGlj");
+    assert_eq!(run(&["16", "b64", "68656c6c6f"]).out(), "aGVsbG8=");
 }
 
 #[test]
@@ -99,10 +99,10 @@ fn multiple_values_produce_multiple_results() {
 // ----------------------------------------------------------- stdin
 
 #[test]
-fn the_picoctf_case() {
+fn a_stream_of_decimal_code_points_becomes_text() {
     // What `nc host port | dec2char` sees: decimal code points, one per line.
-    let out = run_stdin(&["dec", "char"], "112\n105\n99\n111\n");
-    assert_eq!(out.out(), "pico");
+    let out = run_stdin(&["dec", "char"], "104\n101\n108\n108\n111\n");
+    assert_eq!(out.out(), "hello");
     assert_eq!(out.code, 0);
 }
 
@@ -113,7 +113,7 @@ fn stdin_numbers_convert_line_by_line() {
 
 #[test]
 fn char_input_from_a_pipe_drops_the_echo_newline() {
-    assert_eq!(run_stdin(&["char", "hex"], "picoCTF\n").out(), "7069636f435446");
+    assert_eq!(run_stdin(&["char", "hex"], "hello\n").out(), "68656c6c6f");
     // Interior newlines are data and must survive.
     assert_eq!(run_stdin(&["char", "hex"], "a\nb\n").out(), "610a62");
 }
@@ -132,10 +132,10 @@ fn argv0_selects_the_conversion() {
     for (name, args, stdin, expected) in [
         ("hex2bin", vec!["41", "42"], None, "01000001\n01000010"),
         ("1628", vec!["ff"], None, "377"),
-        ("b642char", vec!["cGljb0NURg=="], None, "picoCTF"),
-        ("dec2ascii", vec!["112", "105"], None, "pi"),
-        ("char2hex", vec!["picoCTF"], None, "7069636f435446"),
-        ("dec2char", vec![], Some("112\n105\n99\n111\n"), "pico"),
+        ("b642char", vec!["aGVsbG8="], None, "hello"),
+        ("dec2ascii", vec!["104", "105"], None, "hi"),
+        ("char2hex", vec!["hello"], None, "68656c6c6f"),
+        ("dec2char", vec![], Some("104\n101\n108\n108\n111\n"), "hello"),
     ] {
         let shim = make_shim(&dir, name);
         let out = run_exe(&shim, &args, stdin);

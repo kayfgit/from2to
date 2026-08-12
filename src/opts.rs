@@ -13,10 +13,12 @@ EXAMPLES:
     hex2bin ff                    11111111
     hex2bin 0f                    00001111   (digit width is preserved)
     hex2bin -W 0f                 1111       (bare numeric)
-    nc host 1234 | dec2char       decode a stream of decimal code points
-    char2hex picoCTF              7069636f435446
-    hex2b64 706963                cGlj
+    char2hex hello                68656c6c6f
+    hex2b64 68656c6c6f            aGVsbG8=
     f2t 36 10 zz                  1295       (any base 2-36)
+
+    nc example.com 4000 | dec2char
+        decode a stream of decimal code points as it arrives
 
 Input comes from the arguments, or from stdin when none are given.
 Output streams as it is produced, except for base64/base32 targets, which

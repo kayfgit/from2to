@@ -7,8 +7,8 @@ Conversion that fits in a pipe. Every command is named for what it does:
 $ hex2bin ff
 11111111
 
-$ nc host 1234 | dec2char
-picoCTF{th3_fl4g}
+$ nc example.com 4000 | dec2char
+flag{d3c0d3d_1n_0n3_p1p3}
 ```
 
 No Python REPL, no `awk`, no looking up `printf` format strings. One binary
@@ -17,22 +17,61 @@ each of which takes its input from the command line or from stdin.
 
 ## Install
 
+Requires a [Rust toolchain](https://rustup.rs). Then, in a shell:
+
 ```console
-$ cargo install --path .
-$ from2to install
-installed 63 commands via hardlink in C:\Users\you\.cargo\bin
+$ git clone https://github.com/kayfgit/from2to
+$ cd from2to
+$ cargo install --path . && from2to install
 ```
 
-`install` puts every command name next to the binary. They are hardlinks to the
-one executable, so the whole set costs no extra disk space; it falls back to
-symlinks and then to copies where hardlinks are not available.
+That is the whole thing. Open a new shell afterwards so the new commands are
+picked up, then check it worked:
 
-After a rebuild, run `from2to install` again — `cargo install` writes a new
-binary, which leaves the shims pointing at the old one. Reinstalling refreshes
-them in place and needs no flags.
+```console
+$ hex2bin ff
+11111111
+```
 
-`from2to uninstall` takes them away again. Both commands identify their own
-shims by a marker compiled into the binary, so they recognize any version they
+### What those commands actually do
+
+1. **`cd from2to`** — the next command reads `Cargo.toml` from the current
+   directory, so you have to be inside the clone. This is the step people miss.
+2. **`cargo install --path .`** — builds the release binary and copies it to
+   Cargo's binary directory (`~/.cargo/bin`, or `%USERPROFILE%\.cargo\bin` on
+   Windows). That directory is already on your `PATH` if you installed Rust
+   through rustup. At this point you have exactly one command: `from2to`.
+3. **`from2to install`** — creates the ~60 per-conversion commands
+   (`hex2bin`, `dec2char`, …) next to the binary. They are hardlinks to that one
+   executable, so the whole set costs no extra disk space; it falls back to
+   symlinks and then to copies where hardlinks are not available. It prints
+   where it put them:
+
+   ```console
+   installed 63 commands via hardlink in /home/you/.cargo/bin
+   ```
+
+### Installing somewhere else
+
+`from2to install --dir <path>` puts the commands wherever you like — useful if
+you would rather keep `~/.cargo/bin` tidy. Putting that directory on your
+`PATH` is then up to you. `--dry-run` lists what it would create without
+touching anything.
+
+### Updating and removing
+
+After changing the code, run **both** commands again:
+
+```console
+$ cargo install --path . --force && from2to install
+```
+
+`cargo install` writes a *new* binary, which leaves the existing commands
+pointing at the old one. The second command refreshes them in place and needs
+no flags.
+
+`from2to uninstall` removes them again. Both commands identify their own work
+by a marker compiled into the binary, so they recognize any version they
 installed while leaving an unrelated `hex2bin` of your own strictly alone —
 that one needs `--force` before install will touch it.
 
@@ -97,7 +136,7 @@ does the obvious thing.
 Output streams as it is produced, so a slow producer shows up live:
 
 ```console
-$ nc host 1234 | dec2char      # prints as bytes arrive, not at EOF
+$ nc example.com 4000 | dec2char   # prints as bytes arrive, not at EOF
 ```
 
 The one exception is base64/base32 *output*, which has to see the whole input
@@ -109,8 +148,8 @@ Separators are chosen to be the useful thing rather than a uniform thing:
 |---|---|---|
 | `hex2dec` | newline per result | one line in, one line out |
 | `dec2char` | nothing | the point is to reassemble a flag |
-| `char2hex` | nothing | `7069636f` reads like `xxd -p` |
-| `char2dec` | space | `112 105 99 111` is unreadable otherwise |
+| `char2hex` | nothing | `68656c6c6f` reads like `xxd -p` |
+| `char2dec` | space | `104 101 108 108 111` is unreadable otherwise |
 
 `-d <s>` sets it explicitly, `-j` joins with nothing.
 
@@ -131,10 +170,10 @@ $ hex2bin -w 12 0f
 The same rule keeps a leading zero byte alive through an encoding:
 
 ```console
-$ hex2b64 00706963
-AHBpYw==
-$ hex2b64 706963
-cGlj
+$ hex2b64 0068656c6c6f
+AGhlbGxv
+$ hex2b64 68656c6c6f
+aGVsbG8=
 ```
 
 Base 10 has no such structure, so decimal results are always bare.
@@ -145,8 +184,8 @@ Base 10 has no such structure, so decimal results are always bare.
 `dec2char` reads Unicode code points, because decimal digits do not:
 
 ```console
-$ hex2char 706963
-pic
+$ hex2char 68656c6c6f
+hello
 $ dec2char 128512
 😀
 ```
@@ -192,3 +231,7 @@ bit regrouping — so a multi-megabyte hex blob converts in one linear pass.
 $ cargo test
 $ cargo build --release
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,12 +1,26 @@
 [package]
 name = "from2to"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Fast conversion at the terminal: hex2bin, dec2char, hex2b64, and friends"
 license = "MIT"
 repository = "https://github.com/kayfgit/from2to"
+homepage = "https://github.com/kayfgit/from2to"
+documentation = "https://docs.rs/from2to"
+readme = "README.md"
 keywords = ["base", "hex", "binary", "ctf", "convert"]
 categories = ["command-line-utilities"]
+# Everything needed to build and test the crate, and nothing else. Without this
+# the published tarball would carry whatever else happens to be in the tree.
+include = [
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "man/*.1",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+]
 
 [lib]
 name = "from2to"
@@ -17,9 +31,24 @@ name = "from2to"
 path = "src/main.rs"
 
 [dependencies]
-clap = "4"
-data-encoding = "2"
+# Default features off drops clap's colour stack — anstream, anstyle-parse,
+# anstyle-query, anstyle-wincon, colorchoice, is_terminal_polyfill,
+# once_cell_polyfill, utf8parse and windows-sys — which is 9 of the 16 crates
+# this used to pull in. `suggestions` stays: it catches typo'd format names.
+clap = { version = "4.5", default-features = false, features = [
+    "std",
+    "help",
+    "usage",
+    "error-context",
+    "suggestions",
+] }
+data-encoding = "2.6"
 num-bigint = "0.4"
+
+[lints.clippy]
+# `%` reads better than `is_multiple_of` in the bit-width arithmetic, and the
+# method only stabilized in 1.87 — above the 1.85 floor this crate targets.
+manual_is_multiple_of = "allow"
 
 [profile.release]
 opt-level = 3

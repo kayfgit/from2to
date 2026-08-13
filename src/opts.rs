@@ -16,6 +16,7 @@ EXAMPLES:
     char2hex hello                68656c6c6f
     hex2b64 68656c6c6f            aGVsbG8=
     f2t 36 10 zz                  1295       (any base 2-36)
+    f2t 1628 ff                   377        (numeric shorthand: 16 to 8)
     whatbase bDNhcm5fdGgzX3IwcDM1 b64        (when you do not know the base)
 
     nc example.com 4000 | dec2char
@@ -239,6 +240,13 @@ pub fn self_command(invoked_as: &str) -> Command {
                             .long("force")
                             .action(ArgAction::SetTrue)
                             .help("Replace existing files that are not ours"),
+                    )
+                    .arg(
+                        Arg::new("method")
+                            .long("method")
+                            .value_name("HOW")
+                            .value_parser(["symlink", "hardlink", "copy"])
+                            .help("How to create them (default: symlink on Unix, hardlink on Windows)"),
                     ),
             )
             .subcommand(

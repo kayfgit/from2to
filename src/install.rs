@@ -1,9 +1,16 @@
 //! Creating and removing the per-conversion command shims.
 //!
 //! Every shim is the same binary under a different name; the name is what
-//! selects the conversion. A hardlink is the cheapest way to do that — 60-odd
-//! names share one copy on disk — so it is tried first, with a symlink and
-//! then an outright copy as fallbacks.
+//! selects the conversion. Both linking methods share one copy on disk, so the
+//! choice between them is about what survives an upgrade:
+//!
+//! - **Unix leads with symlinks.** `cargo install --force` writes a *new*
+//!   binary. A symlink follows it; a hardlink is left pointing at the old
+//!   inode, which is why every shim used to go stale on every upgrade.
+//! - **Windows leads with hardlinks**, because creating a symlink there needs
+//!   Developer Mode or an elevated prompt.
+//!
+//! An outright copy is the last resort on both. `--method` overrides the order.
 
 use std::fs;
 use std::io;
@@ -20,14 +27,28 @@ pub enum Method {
 }
 
 impl Method {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Method::Hardlink => "hardlink",
             Method::Symlink => "symlink",
             Method::Copy => "copy",
         }
     }
+
+    /// Every spelling `--method` accepts, and the order they are listed in help.
+    pub const ALL: [Method; 3] = [Method::Hardlink, Method::Symlink, Method::Copy];
+
+    pub fn parse(s: &str) -> Option<Method> {
+        Method::ALL.into_iter().find(|m| m.label() == s)
+    }
 }
+
+/// The order to try when the caller has not insisted on one. See the module
+/// docs for why the two platforms disagree.
+#[cfg(windows)]
+const DEFAULT_ORDER: [Method; 3] = [Method::Hardlink, Method::Symlink, Method::Copy];
+#[cfg(not(windows))]
+const DEFAULT_ORDER: [Method; 3] = [Method::Symlink, Method::Hardlink, Method::Copy];
 
 const EXE_SUFFIX: &str = std::env::consts::EXE_SUFFIX;
 
@@ -65,8 +86,21 @@ impl Target {
     }
 
     /// Is this path the binary that is currently running?
+    ///
+    /// A symlink shim *resolves* to that binary, so canonicalizing alone would
+    /// call every one of them "self" — and `uninstall`, which skips anything
+    /// that is self, would then remove nothing at all. Only the real file
+    /// counts; a link that merely points at it does not.
     fn is_self(&self, path: &Path) -> bool {
+        if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return false;
+        }
         fs::canonicalize(path).is_ok_and(|p| p == self.exe)
+    }
+
+    /// A symlink naming the same file as our binary — ours, even if it dangles.
+    fn points_at_us(&self, path: &Path) -> bool {
+        fs::read_link(path).is_ok_and(|t| t.file_name() == self.exe.file_name())
     }
 
     /// Work out what a file occupying one of our names actually is.
@@ -78,7 +112,14 @@ impl Target {
     /// from "ours but stale".
     fn classify(&self, path: &Path) -> Kind {
         let Ok(bytes) = fs::read(path) else {
-            return Kind::Foreign;
+            // Unreadable, which for a valid symlink cannot happen — `read`
+            // follows it. So this is a shim left dangling by a binary that
+            // moved away, and it is still ours to replace.
+            return if self.points_at_us(path) {
+                Kind::Stale
+            } else {
+                Kind::Foreign
+            };
         };
         if self.exe_bytes().is_some_and(|ours| &bytes == ours) {
             return Kind::Current;
@@ -145,19 +186,63 @@ fn try_symlink(src: &Path, dst: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(src, dst)
 }
 
+/// Do two paths name the same directory?
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b
+        || match (fs::canonicalize(a), fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        }
+}
+
+/// What a symlink at `dst` should point at.
+///
+/// A bare file name when the two sit in the same directory, so the pair can be
+/// moved or renamed as a unit. An absolute target would bake in wherever the
+/// binary happened to be when `install` ran, which breaks the moment anything
+/// relocates the directory. Pointing across directories leaves no choice.
+fn symlink_target(src: &Path, dst: &Path) -> PathBuf {
+    match (src.parent(), dst.parent()) {
+        (Some(a), Some(b)) if same_dir(a, b) => {
+            PathBuf::from(src.file_name().unwrap_or(src.as_os_str()))
+        }
+        _ => src.to_path_buf(),
+    }
+}
+
+fn try_method(m: Method, src: &Path, dst: &Path) -> io::Result<()> {
+    match m {
+        Method::Hardlink => fs::hard_link(src, dst),
+        Method::Symlink => try_symlink(&symlink_target(src, dst), dst),
+        Method::Copy => fs::copy(src, dst).map(|_| ()),
+    }
+}
+
 /// Create one shim, degrading through the fallbacks until something works.
-fn link_one(src: &Path, dst: &Path) -> io::Result<Method> {
-    match fs::hard_link(src, dst) {
-        Ok(()) => return Ok(Method::Hardlink),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(e),
-        Err(_) => {}
+///
+/// `want` pins a single method instead — if it fails, that is an error rather
+/// than a cue to try something else, since the caller asked for it by name.
+fn link_one(src: &Path, dst: &Path, want: Option<Method>) -> io::Result<Method> {
+    let pinned;
+    let order: &[Method] = match want {
+        Some(m) => {
+            pinned = [m];
+            &pinned
+        }
+        None => &DEFAULT_ORDER,
+    };
+
+    let mut last = None;
+    for &m in order {
+        match try_method(m, src, dst) {
+            Ok(()) => return Ok(m),
+            // Something is already sitting there; that is the caller's call to
+            // make, not something to work around by trying another method.
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(e),
+            Err(e) => last = Some(e),
+        }
     }
-    match try_symlink(src, dst) {
-        Ok(()) => return Ok(Method::Symlink),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(e),
-        Err(_) => {}
-    }
-    fs::copy(src, dst).map(|_| Method::Copy)
+    Err(last.unwrap_or_else(|| io::Error::other("no way to create a link")))
 }
 
 // ------------------------------------------------------------ install
@@ -172,13 +257,37 @@ pub struct Report {
     pub methods: Vec<Method>,
 }
 
-pub fn install(dir: Option<&str>, dry_run: bool, force: bool) -> io::Result<Report> {
+/// Probe before creating fifty-odd files, so a permission problem surfaces as
+/// one clear message instead of halfway through the run.
+fn check_writable(dir: &Path) -> io::Result<()> {
+    let probe = dir.join(format!(".from2to-write-probe-{}", std::process::id()));
+    match fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(e) => Err(io::Error::other(format!(
+            "cannot write to {} ({e}) — choose somewhere else with --dir",
+            dir.display()
+        ))),
+    }
+}
+
+pub fn install(
+    dir: Option<&str>,
+    dry_run: bool,
+    force: bool,
+    method: Option<Method>,
+) -> io::Result<Report> {
     let target = Target::resolve(dir)?;
     if !target.dir.is_dir() {
         return Err(io::Error::other(format!(
             "{} is not a directory",
             target.dir.display()
         )));
+    }
+    if !dry_run {
+        check_writable(&target.dir)?;
     }
 
     let mut report = Report::default();
@@ -230,11 +339,11 @@ pub fn install(dir: Option<&str>, dry_run: bool, force: bool) -> io::Result<Repo
     }
 
     for dst in planned {
-        let method = link_one(&target.exe, &dst).map_err(|e| {
+        let used = link_one(&target.exe, &dst, method).map_err(|e| {
             io::Error::other(format!("could not create {}: {e}", dst.display()))
         })?;
-        if !report.methods.contains(&method) {
-            report.methods.push(method);
+        if !report.methods.contains(&used) {
+            report.methods.push(used);
         }
         report.created += 1;
     }
@@ -336,11 +445,13 @@ mod tests {
     #[test]
     fn all_names_includes_shims_and_short_self_name() {
         let names = all_names();
-        assert_eq!(names.len(), 64);
+        assert_eq!(names.len(), 52);
         assert!(names.contains(&"hex2bin".to_string()));
-        assert!(names.contains(&"1628".to_string()));
         assert!(names.contains(&"f2t".to_string()));
         assert!(names.contains(&"whatbase".to_string()));
+        // Numeric shorthands resolve, but a file called `1628` never lands in
+        // a directory on PATH.
+        assert!(!names.contains(&"1628".to_string()));
         // The real binary name is never a shim; it is what shims point at.
         assert!(!names.contains(&"from2to".to_string()));
     }
@@ -386,6 +497,45 @@ mod tests {
         let current = dir.join("hex2dec.bin");
         fs::write(&current, target.exe_bytes().unwrap()).unwrap();
         assert_eq!(target.classify(&current), Kind::Current);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The property that makes a package relocatable: a shim next to the binary
+    /// points at a bare name, never at wherever `install` happened to run.
+    #[test]
+    fn a_symlink_beside_the_binary_uses_a_bare_name() {
+        let src = Path::new("/opt/somewhere/bin/from2to");
+        let dst = Path::new("/opt/somewhere/bin/hex2bin");
+        assert_eq!(symlink_target(src, dst), PathBuf::from("from2to"));
+
+        // Across directories there is nothing to be relative to.
+        let far = Path::new("/usr/local/bin/hex2bin");
+        assert_eq!(symlink_target(src, far), src.to_path_buf());
+    }
+
+    #[test]
+    fn method_names_round_trip() {
+        for m in Method::ALL {
+            assert_eq!(Method::parse(m.label()), Some(m));
+        }
+        assert_eq!(Method::parse("nonsense"), None);
+    }
+
+    /// `uninstall` skips anything that is "self". Before the symlink switch
+    /// that only ever matched the real binary; a symlink resolves to it too, so
+    /// treating one as self would make uninstall silently remove nothing.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_to_the_binary_is_not_itself() {
+        let dir = std::env::temp_dir().join(format!("f2t-self-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = Target::resolve(None).unwrap();
+
+        let link = dir.join("hex2bin");
+        try_symlink(&target.exe, &link).unwrap();
+        assert!(!target.is_self(&link), "a symlink shim is not the binary");
+        assert!(target.is_self(&target.exe), "the binary still is");
 
         fs::remove_dir_all(&dir).ok();
     }

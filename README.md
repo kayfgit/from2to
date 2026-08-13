@@ -1,5 +1,9 @@
 # from2to
 
+[![crates.io](https://img.shields.io/crates/v/from2to.svg)](https://crates.io/crates/from2to)
+[![docs.rs](https://img.shields.io/docsrs/from2to)](https://docs.rs/from2to)
+[![MIT](https://img.shields.io/crates/l/from2to.svg)](LICENSE)
+
 <img width="800" height="400" alt="from2to" src="https://github.com/user-attachments/assets/e93e4775-87fa-48f2-ba11-3e4f4a351fe5" />
 
 Conversion that fits in a pipe. Every command is named for what it does:
@@ -14,7 +18,7 @@ flag{d3c0d3d_1n_0n3_p1p3}
 ```
 
 No Python REPL, no `awk`, no looking up `printf` format strings. One binary
-installs ~60 short commands — `hex2bin`, `dec2char`, `char2hex`, `hex2b64` —
+installs ~50 short commands — `hex2bin`, `dec2char`, `char2hex`, `hex2b64` —
 each of which takes its input from the command line or from stdin.
 
 And when you do not know what you are looking at yet, `whatbase` works it out:
@@ -26,60 +30,61 @@ l3arn_th3_r0p35
 
 ## Install
 
-Requires a [Rust toolchain](https://rustup.rs). Then, in a shell:
+Requires a [Rust toolchain](https://rustup.rs) (1.85 or newer).
 
 ```console
-$ git clone https://github.com/kayfgit/from2to
-$ cd from2to
-$ cargo install --path . && from2to install
+$ cargo install from2to
+$ from2to install
 ```
 
-That is the whole thing. Open a new shell afterwards so the new commands are
-picked up, then check it worked:
+The first command gives you one binary, `from2to`. The second creates the
+per-conversion commands next to it and prints where they went:
+
+```console
+installed 52 commands via symlink in /home/you/.cargo/bin
+```
+
+Open a new shell so they are picked up, then check it worked:
 
 ```console
 $ hex2bin ff
 11111111
 ```
 
-### What those commands actually do
+Building from a clone works the same way — `cargo install --path .` from inside
+the checkout, since that command reads `Cargo.toml` from the current directory.
 
-1. **`cd from2to`** — the next command reads `Cargo.toml` from the current
-   directory, so you have to be inside the clone. This is the step people miss.
-2. **`cargo install --path .`** — builds the release binary and copies it to
-   Cargo's binary directory (`~/.cargo/bin`, or `%USERPROFILE%\.cargo\bin` on
-   Windows). That directory is already on your `PATH` if you installed Rust
-   through rustup. At this point you have exactly one command: `from2to`.
-3. **`from2to install`** — creates the ~60 per-conversion commands
-   (`hex2bin`, `dec2char`, …) next to the binary. They are hardlinks to that one
-   executable, so the whole set costs no extra disk space; it falls back to
-   symlinks and then to copies where hardlinks are not available. It prints
-   where it put them:
+### Why the second step exists
 
-   ```console
-   installed 64 commands via hardlink in /home/you/.cargo/bin
-   ```
+The commands are links to the one executable, so the whole set costs no extra
+disk space. On Unix they are symlinks; on Windows, hardlinks, because creating
+a symlink there needs Developer Mode or an elevated prompt. `--method
+symlink|hardlink|copy` overrides that, and it falls back through the list if
+your filesystem will not do the first choice.
+
+It is a separate step because writing fifty files into a directory on your
+`PATH` should be something you ask for, not something a package manager does to
+you behind your back.
 
 ### Installing somewhere else
 
 `from2to install --dir <path>` puts the commands wherever you like — useful if
-you would rather keep `~/.cargo/bin` tidy. Putting that directory on your
-`PATH` is then up to you. `--dry-run` lists what it would create without
-touching anything.
+you would rather keep `~/.cargo/bin` tidy. Putting that directory on your `PATH`
+is then up to you. `--dry-run` lists what it would create without touching
+anything.
 
 ### Updating and removing
 
-After changing the code, run **both** commands again:
-
 ```console
-$ cargo install --path . --force && from2to install
+$ cargo install from2to --force
 ```
 
-`cargo install` writes a *new* binary, which leaves the existing commands
-pointing at the old one. The second command refreshes them in place and needs
-no flags.
+On Unix that is the whole update: the commands are symlinks, so they follow the
+new binary and keep working. **On Windows** they are hardlinks pointing at the
+old executable, so run `from2to install` again afterwards to refresh them — it
+needs no flags.
 
-`from2to uninstall` removes them again. Both commands identify their own work
+`from2to uninstall` removes them again. Both directions identify their own work
 by a marker compiled into the binary, so they recognize any version they
 installed while leaving an unrelated `hex2bin` of your own strictly alone —
 that one needs `--force` before install will touch it.
@@ -91,9 +96,9 @@ that one needs `--force` before install will touch it.
 | Number bases | `bin` `oct` `dec` `hex`, in every ordered pair: `hex2bin`, `dec2hex`, `bin2oct`, … |
 | Text | `char` (alias `ascii`): `dec2char`, `hex2char`, `char2hex`, `dec2ascii`, … |
 | Encodings | `b64` `b32`: `hex2b64`, `b642char`, `char2b32`, `b642hex`, … |
-| Shorthands | `1628` = hex→oct, `10216` = dec→hex, `2216` = bin→hex, … |
 | Generic | `f2t <from> <to>` for any base 2–36 |
 | Detection | `whatbase <text>` — when you do not know the format yet |
+| Shorthands | `f2t 1628` = hex→oct, `f2t 10216` = dec→hex, … (not installed as commands) |
 
 `from2to list` prints all of them.
 
@@ -105,9 +110,19 @@ both a base and the separator, those sixteen names each have exactly one valid
 reading — but `216` would be both 2→16 and 21→6. The restriction is what keeps
 them unambiguous, so the set cannot be extended. Use `f2t 21 6` for the rest.
 
-One shell caveat: **PowerShell** parses a bare `1628` as the number 1628, not as
-a command, so `1628 ff` is a syntax error there. Write `1628.exe ff`, `& 1628 ff`
-or `f2t 1628 ff`. bash and cmd.exe run them bare with no ceremony.
+**They are not installed as commands.** A file called `822` or `10216` sitting
+in a directory on your `PATH` is a poor citizen, and it is the one name shape a
+package manager would rightly object to. They are only a spelling `f2t`
+understands:
+
+```console
+$ f2t 1628 ff
+377
+```
+
+That also settles an old wart: **PowerShell** parses a bare `1628` as the number
+1628 rather than a command, so it could never have run them without ceremony.
+`f2t 1628 ff` works everywhere.
 
 ### Generic form
 
@@ -322,6 +337,13 @@ bit regrouping — so a multi-megabyte hex blob converts in one linear pass.
 $ cargo test
 $ cargo build --release
 ```
+
+Minimum supported Rust version is **1.85**, the floor for edition 2024. CI holds
+that honest with a job pinned to it, so a newer language feature slipping in is
+a build failure rather than a surprise for someone on an older toolchain.
+
+A man page lives at [`man/from2to.1`](man/from2to.1); a test fails if it drifts
+behind the flags. `CHANGELOG.md` records what changed between releases.
 
 ## License
 

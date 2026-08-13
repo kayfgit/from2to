@@ -55,7 +55,11 @@ fn run() -> Fallible<ExitCode> {
         Some(("install", sm)) => {
             let dir = sm.get_one::<String>("dir").map(String::as_str);
             let dry = sm.get_flag("dry-run");
-            let report = install::install(dir, dry, sm.get_flag("force"))?;
+            // clap has already restricted this to the three valid spellings.
+            let method = sm
+                .get_one::<String>("method")
+                .and_then(|m| install::Method::parse(m));
+            let report = install::install(dir, dry, sm.get_flag("force"), method)?;
             let target = install::Target::resolve(dir)?;
             install::print_install_report(&target.dir, &report, dry);
             return Ok(if report.conflicts.is_empty() {

@@ -43,6 +43,11 @@ pub const DETECT_NAME: &str = "whatbase";
 /// of these 16 strings still has exactly one valid `<from>2<to>` split. Adding
 /// any further base breaks that (`216` would read as both 2->16 and 21->6), so
 /// this table must not be generalized.
+///
+/// These are understood by [`resolve`] but deliberately *not* installed as
+/// commands: a file called `822` in a directory on `PATH` is a poor citizen,
+/// and it is the one name shape a package manager would rightly object to.
+/// `f2t 1628 ff` works whether or not anything was installed.
 pub fn shorthands() -> Vec<(String, Format, Format)> {
     let mut out = Vec::new();
     for (from, fd) in CORE_BASES {
@@ -54,6 +59,9 @@ pub fn shorthands() -> Vec<(String, Format, Format)> {
 }
 
 /// Every command name `install` should create a shim for.
+///
+/// Word names only. The numeric shorthands from [`shorthands`] are understood
+/// by [`resolve`] but never written to disk — see that function for why.
 pub fn shim_names() -> Vec<(String, Format, Format)> {
     let mut out = Vec::new();
 
@@ -70,13 +78,6 @@ pub fn shim_names() -> Vec<(String, Format, Format)> {
     for (base, _) in CORE_BASES {
         out.push((format!("{}2ascii", base.name()), base, Format::Char));
         out.push((format!("ascii2{}", base.name()), Format::Char, base));
-    }
-
-    // Numeric shorthands, identity pairs dropped as above.
-    for (name, from, to) in shorthands() {
-        if from != to {
-            out.push((name, from, to));
-        }
     }
 
     out
@@ -184,8 +185,23 @@ mod tests {
             assert!(seen.insert(name, ()).is_none(), "duplicate shim {name}");
             assert_eq!(resolve(name), Some((*from, *to)), "{name} resolved wrong");
         }
-        // 42 word pairs + 8 ascii aliases + 12 shorthands
-        assert_eq!(names.len(), 62);
+        // 42 word pairs + 8 ascii aliases. The 12 numeric shorthands resolve
+        // but are not installed.
+        assert_eq!(names.len(), 50);
+    }
+
+    /// The shorthands must keep working through `resolve` even though nothing
+    /// installs them, or `f2t 1628 ff` breaks for everyone who learned it.
+    #[test]
+    fn shorthands_resolve_but_are_never_installed() {
+        assert_eq!(resolve("1628"), Some((Format::HEX, Format::OCT)));
+        let installed = shim_names();
+        for (name, _, _) in shorthands() {
+            assert!(
+                !installed.iter().any(|(n, _, _)| *n == name),
+                "{name} must not be installed as a command"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # No `cargo fmt --check`: this codebase uses a deliberately compact style
+      # that default rustfmt would reflow. Adding the gate would mean
+      # reformatting every file, which is a bigger change than it is worth.
+      - run: cargo clippy --all-targets
+      - run: cargo test
+
+  # The floor declared in Cargo.toml is only a claim until something builds
+  # against it. `repeat_n`, `div_ceil` and edition 2024 all sit just under it.
+  msrv:
+    name: msrv / 1.85
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets
+
+  # Catches a broken `include` list or a metadata field crates.io rejects,
+  # before the one-way door of an actual publish.
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo publish --dry-run
+      - run: cargo package --list

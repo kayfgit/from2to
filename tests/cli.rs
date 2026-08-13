@@ -266,6 +266,47 @@ fn formatting_flags_apply() {
     assert_eq!(run(&["dec", "hex", "-j", "255", "16"]).out(), "ff10");
 }
 
+// ----------------------------------------------------------- docs
+
+/// The man page is hand-written, so nothing stops it drifting behind the
+/// argument definitions except this. The expectations are read out of `opts`
+/// rather than listed here, so a new flag fails the test the day it is added.
+#[test]
+fn the_man_page_documents_every_flag_and_subcommand() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("man/from2to.1");
+    let roff = fs::read_to_string(&path).expect("man/from2to.1 is missing");
+    // roff escapes option dashes as `\-`; compare against plain text.
+    let text = roff.replace("\\-", "-");
+
+    fn walk(text: &str, cmd: &clap::Command, missing: &mut Vec<String>, seen: &mut usize) {
+        for arg in cmd.get_arguments() {
+            if let Some(long) = arg.get_long() {
+                *seen += 1;
+                let flag = format!("--{long}");
+                if !text.contains(&flag) {
+                    missing.push(flag);
+                }
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            *seen += 1;
+            if !text.contains(sub.get_name()) {
+                missing.push(sub.get_name().to_string());
+            }
+            walk(text, sub, missing, seen);
+        }
+    }
+
+    let mut missing = Vec::new();
+    let mut seen = 0;
+    walk(&text, &from2to::opts::self_command("from2to"), &mut missing, &mut seen);
+    walk(&text, &from2to::opts::detect_command("whatbase"), &mut missing, &mut seen);
+
+    assert!(missing.is_empty(), "man page never mentions: {missing:?}");
+    // Guard against the test passing because it inspected nothing.
+    assert!(seen > 20, "only {seen} items checked; the walk is not working");
+}
+
 // ----------------------------------------------------------- install
 
 #[test]
@@ -273,10 +314,11 @@ fn list_names_every_command() {
     let out = run(&["list"]);
     assert_eq!(out.code, 0);
     let lines: Vec<&str> = out.stdout.lines().collect();
-    assert_eq!(lines.len(), 63);
+    assert_eq!(lines.len(), 51);
     assert!(lines.iter().any(|l| l.starts_with("hex2bin ")));
-    assert!(lines.iter().any(|l| l.starts_with("1628 ")));
     assert!(lines.iter().any(|l| l.starts_with("whatbase ")));
+    // The numeric shorthands are not commands any more, only `f2t` forms.
+    assert!(!lines.iter().any(|l| l.starts_with("1628 ")));
 }
 
 #[test]
@@ -303,8 +345,8 @@ fn install_then_uninstall_round_trips() {
 
     let out = run_exe(&exe, &["install", "--dir", dir_s], None);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    // 62 shims + whatbase + f2t + the binary.
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 65);
+    // 50 shims + whatbase + f2t + the binary.
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 53);
 
     // A shim really works.
     let shim = dir.join(format!("hex2bin{EXE_SUFFIX}"));
@@ -318,6 +360,52 @@ fn install_then_uninstall_round_trips() {
     let out = run_exe(&exe, &["uninstall", "--dir", dir_s], None);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The reason Unix defaults to symlinks. `cargo install --force` writes a *new*
+/// binary; a symlink follows it, so the shims keep working with no reinstall.
+/// A hardlink would still point at the old inode.
+#[test]
+fn symlink_shims_survive_the_binary_being_replaced() {
+    let dir = temp_dir("upgrade");
+    let exe = dir.join(format!("from2to{EXE_SUFFIX}"));
+    fs::copy(EXE, &exe).unwrap();
+    let dir_s = dir.to_str().unwrap();
+
+    let out = run_exe(&exe, &["install", "--dir", dir_s, "--method", "symlink"], None);
+    if out.code != 0 {
+        // Windows without Developer Mode cannot make symlinks at all.
+        eprintln!("skipping: symlinks unavailable here ({})", out.stderr);
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let shim = dir.join(format!("hex2bin{EXE_SUFFIX}"));
+    // Relative, so the whole directory can be moved or renamed as a unit.
+    assert_eq!(
+        fs::read_link(&shim).unwrap(),
+        PathBuf::from(format!("from2to{EXE_SUFFIX}")),
+    );
+    assert_eq!(run_exe(&shim, &["ff"], None).out(), "11111111");
+
+    // Stand in for `cargo install --force`: same path, different bytes.
+    let mut bytes = fs::read(EXE).unwrap();
+    bytes.extend_from_slice(b"\n// a later build\n");
+    fs::remove_file(&exe).unwrap();
+    fs::write(&exe, &bytes).unwrap();
+
+    assert_eq!(
+        fs::read(&shim).unwrap(),
+        bytes,
+        "the shim should now resolve to the new binary, with no reinstall"
+    );
+
+    // And uninstall must still recognize symlinks as ours and remove them.
+    let out = run_exe(&exe, &["uninstall", "--dir", dir_s], None);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "only the binary left");
 
     let _ = fs::remove_dir_all(&dir);
 }

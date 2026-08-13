@@ -303,7 +303,7 @@ fn structure(f: Format, tokens: &[&str], body: &str) -> (f64, Vec<String>) {
             let n = body.len();
             if body.ends_with('=') {
                 (1.0, vec![format!("padded out to a multiple of {unit}")])
-            } else if n.is_multiple_of(unit) {
+            } else if n % unit == 0 {
                 (0.9, vec![format!("length {n} is a multiple of {unit}")])
             } else {
                 (
@@ -320,11 +320,9 @@ fn positional_structure(r: u32, tokens: &[&str]) -> (f64, Vec<String>) {
     let mut score: f64 = 0.5;
 
     // An explicit prefix settles the question by itself.
-    if let Some(p) = base_prefix(r)
-        && tokens
-            .iter()
-            .any(|t| t.len() > 2 && t[..2].eq_ignore_ascii_case(p))
-    {
+    let prefixed = base_prefix(r)
+        .filter(|p| tokens.iter().any(|t| t.len() > 2 && t[..2].eq_ignore_ascii_case(p)));
+    if let Some(p) = prefixed {
         return (1.0, vec![format!("written with an {p} prefix")]);
     }
 
@@ -353,7 +351,7 @@ fn positional_structure(r: u32, tokens: &[&str]) -> (f64, Vec<String>) {
 
     let bits = Format::Positional(r).bits_per_digit();
     match (uniform, bits) {
-        (Some(w), Some(b)) if (w as u32 * b).is_multiple_of(8) && tokens.len() > 1 => {
+        (Some(w), Some(b)) if (w as u32 * b) % 8 == 0 && tokens.len() > 1 => {
             let bytes = w as u32 * b / 8;
             score = 1.0;
             reasons.push(format!(
@@ -366,7 +364,7 @@ fn positional_structure(r: u32, tokens: &[&str]) -> (f64, Vec<String>) {
         // is a fact about the format.
         (_, Some(b)) if tokens.len() == 1 => {
             let total = widths[0] as u32 * b;
-            if total.is_multiple_of(8) {
+            if total % 8 == 0 {
                 score = 0.65;
                 reasons.push(format!("{} digits — a whole number of bytes", widths[0]));
             } else {

@@ -1,0 +1,257 @@
+.TH FROM2TO 1 "2026-08-13" "from2to 0.2.0" "User Commands"
+.SH NAME
+from2to \- convert between number bases and byte encodings
+.SH SYNOPSIS
+.B <from>2<to>
+[\fIOPTION\fR]... [\fIVALUE\fR]...
+.br
+.B f2t
+\fIFROM\fR \fITO\fR [\fIOPTION\fR]... [\fIVALUE\fR]...
+.br
+.B whatbase
+[\fIOPTION\fR]... [\fITEXT\fR]
+.br
+.B from2to
+\fISUBCOMMAND\fR [\fIOPTION\fR]...
+.SH DESCRIPTION
+One binary answers to about fifty names. The name it was invoked under picks the
+conversion: \fBhex2bin\fR converts hex to binary, \fBdec2char\fR converts decimal
+code points to text, \fBchar2b64\fR converts text to base64.
+.PP
+Values come from the command line, or from standard input when none are given.
+Output streams as it is produced, so a slow producer shows up live; the one
+exception is base64 and base32 \fIoutput\fR, which must see the whole input
+before it can place its padding.
+.PP
+Run
+.B from2to install
+once to create the per\-conversion commands. Without them, everything is still
+reachable through \fBf2t\fR.
+.SH FORMATS
+.TP
+.B bin \fR(\fBb\fR, \fBbinary\fR)
+Base 2.
+.TP
+.B oct \fR(\fBo\fR, \fBoctal\fR)
+Base 8.
+.TP
+.B dec \fR(\fBd\fR, \fBdecimal\fR, \fBint\fR)
+Base 10.
+.TP
+.B hex \fR(\fBh\fR, \fBhexadecimal\fR)
+Base 16.
+.TP
+.B char \fR(\fBascii\fR, \fBchr\fR, \fBtext\fR, \fBstr\fR, \fBraw\fR, \fButf8\fR)
+Text: Unicode scalars, or raw bytes.
+.TP
+.B b64 \fR(\fBbase64\fR), \fBb64url\fR, \fBb32 \fR(\fBbase32\fR), \fBb32hex\fR
+The RFC 4648 encodings.
+.TP
+.I N
+Any bare radix from 2 to 36, for use with \fBf2t\fR.
+.PP
+A conversion between two powers of two is pure bit regrouping, so the digits you
+wrote carry real width information and leading zeros are preserved:
+.B hex2bin 0f
+is \fB00001111\fR, not \fB1111\fR. Base 10 has no such structure, so decimal
+results are always bare.
+.PP
+.B hex2char
+reads bytes, because hex digits come in byte\-sized pairs.
+.B dec2char
+reads Unicode code points, because decimal digits do not.
+.SH OPTIONS
+.TP
+.BR \-w ", " \-\-width " " \fIN\fR
+Pad each result to \fIN\fR digits.
+.TP
+.BR \-W ", " \-\-no\-width
+Drop the natural digit width and emit bare numbers.
+.TP
+.BR \-g ", " \-\-group " " \fIN\fR
+Group output digits in runs of \fIN\fR.
+.TP
+.BR \-u ", " \-\-upper
+Uppercase the output digits.
+.TP
+.BR \-x ", " \-\-prefix
+Prefix results with \fB0x\fR, \fB0b\fR or \fB0o\fR.
+.TP
+.BR \-d ", " \-\-delim " " \fIS\fR
+Separator between results. The escapes \fB\\n\fR, \fB\\t\fR, \fB\\r\fR and
+\fB\\0\fR are understood.
+.TP
+.BR \-j ", " \-\-join
+Run results together with no separator.
+.TP
+.BR \-b ", " \-\-bytes
+Treat \fBchar\fR as raw bytes.
+.TP
+.BR \-c ", " \-\-codepoint
+Treat \fBchar\fR as Unicode code points.
+.TP
+.BR \-k ", " \-\-keep\-going
+Skip tokens that fail instead of stopping. A bad digit is otherwise an error.
+.TP
+.BR \-q ", " \-\-quiet
+Suppress warnings.
+.TP
+.BR \-n ", " \-\-no\-newline
+Do not add a trailing newline.
+.TP
+.B \-\-strict
+Reject \fB0x\fR/\fB0b\fR/\fB0o\fR prefixes, \fB_\fR spacers and unpadded base64.
+.TP
+.BR \-h ", " \-\-help
+Print help and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH INPUT
+Numbers may be separated by whitespace, newlines or commas, and may carry a
+\fB0x\fR, \fB0b\fR or \fB0o\fR prefix or \fB_\fR spacers. \fB\-\-strict\fR turns
+that leniency off.
+.PP
+For \fBchar\fR input, whitespace is data rather than a separator \- except for
+one trailing newline arriving from a pipe, which is dropped so that
+.B echo hi | char2hex
+does the obvious thing.
+.SH IDENTIFYING A FORMAT
+.B whatbase
+takes text and works out what it plausibly is, for when the format is not known
+in advance. It is also available as
+.BR "from2to detect" .
+.TP
+.BR \-a ", " \-\-all
+Show every candidate, not just the likely ones.
+.TP
+.BR \-d ", " \-\-decode
+Print what the best guess decodes to, and nothing else.
+.TP
+.BR \-q ", " \-\-quiet
+Print just the format name, for scripts.
+.TP
+.B \-\-to " " \fIFMT\fR
+With \fB\-\-decode\fR, the format to decode into. Defaults to \fBchar\fR.
+.PP
+Three questions decide the answer: whether the alphabet admits the input, whether
+it is the narrowest alphabet that does, and whether the payload decodes to
+anything meaningful. The score is a confidence and only means something next to
+the other candidates.
+.SH SUBCOMMANDS
+.TP
+.B install
+Create the per\-conversion commands. They are links to this one binary, so the
+whole set costs no extra disk space.
+.RS
+.TP
+.B \-\-dir " " \fIPATH\fR
+Where to put them. Defaults to the directory holding this binary.
+.TP
+.B \-\-method " " \fIHOW\fR
+One of \fBsymlink\fR, \fBhardlink\fR or \fBcopy\fR. The default is a symlink on
+Unix, because it keeps working when the binary is replaced by an upgrade, and a
+hardlink on Windows, where symlinks need Developer Mode or an elevated prompt.
+.TP
+.B \-\-dry\-run
+Show what would be created and change nothing.
+.TP
+.B \-\-force
+Replace existing files that are not ours. Without it, a name already taken by
+another program is reported and left alone.
+.RE
+.TP
+.B uninstall
+Remove the commands again. Files that are not ours are left alone; both
+directions recognize their own work by a marker compiled into the binary, so any
+version can clean up after any other.
+.RS
+.TP
+.B \-\-dir " " \fIPATH\fR
+Where to look. Defaults to the directory holding this binary.
+.TP
+.B \-\-dry\-run
+Show what would be removed and change nothing.
+.RE
+.TP
+.B list
+Print every command name and the conversion it performs.
+.TP
+.B detect
+The same thing as \fBwhatbase\fR, for use before the commands are installed.
+.SH NUMERIC SHORTHANDS
+Using \fB2\fR as the word "to", \fB1628\fR reads as 16\-to\-8. These exist only
+for bases 2, 8, 10 and 16, and that limit is deliberate: with \fB2\fR serving as
+both a base and the separator, those sixteen names each have exactly one valid
+reading, while \fB216\fR would be both 2\-to\-16 and 21\-to\-6.
+.PP
+They are understood by \fBf2t\fR but are deliberately not installed as commands,
+since a file called \fB822\fR sitting in a directory on \fBPATH\fR is a poor
+citizen. Write
+.B f2t 1628 ff
+instead.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+A conversion failed, nothing could be identified, or \fBinstall\fR found a name
+already taken by something else.
+.TP
+.B 2
+No arguments were given under the binary's own name, so help was printed.
+.SH EXAMPLES
+Convert a hex byte to binary, keeping the written width:
+.PP
+.nf
+.RS
+$ hex2bin 0f
+00001111
+.RE
+.fi
+.PP
+Decode a stream of decimal code points as it arrives:
+.PP
+.nf
+.RS
+$ nc example.com 4000 | dec2char
+flag{d3c0d3d_1n_0n3_p1p3}
+.RE
+.fi
+.PP
+Identify an unknown string and decode it in one step:
+.PP
+.nf
+.RS
+$ whatbase \-d bDNhcm5fdGgzX3IwcDM1
+l3arn_th3_r0p35
+.RE
+.fi
+.PP
+Use the detected format in a pipeline:
+.PP
+.nf
+.RS
+$ f2t "$(whatbase \-q "$blob")" char "$blob"
+.RE
+.fi
+.PP
+Any base from 2 to 36:
+.PP
+.nf
+.RS
+$ f2t 36 10 zz
+1295
+.RE
+.fi
+.SH SEE ALSO
+.BR xxd (1),
+.BR base64 (1),
+.BR base32 (1),
+.BR od (1),
+.BR printf (1)
+.SH AUTHOR
+Written by kayfgit. Source and issue tracker at
+.UR https://github.com/kayfgit/from2to
+.UE .

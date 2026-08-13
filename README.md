@@ -17,6 +17,13 @@ No Python REPL, no `awk`, no looking up `printf` format strings. One binary
 installs ~60 short commands — `hex2bin`, `dec2char`, `char2hex`, `hex2b64` —
 each of which takes its input from the command line or from stdin.
 
+And when you do not know what you are looking at yet, `whatbase` works it out:
+
+```console
+$ whatbase -d bDNhcm5fdGgzX3IwcDM1
+l3arn_th3_r0p35
+```
+
 ## Install
 
 Requires a [Rust toolchain](https://rustup.rs). Then, in a shell:
@@ -50,7 +57,7 @@ $ hex2bin ff
    where it put them:
 
    ```console
-   installed 63 commands via hardlink in /home/you/.cargo/bin
+   installed 64 commands via hardlink in /home/you/.cargo/bin
    ```
 
 ### Installing somewhere else
@@ -86,6 +93,7 @@ that one needs `--force` before install will touch it.
 | Encodings | `b64` `b32`: `hex2b64`, `b642char`, `char2b32`, `b642hex`, … |
 | Shorthands | `1628` = hex→oct, `10216` = dec→hex, `2216` = bin→hex, … |
 | Generic | `f2t <from> <to>` for any base 2–36 |
+| Detection | `whatbase <text>` — when you do not know the format yet |
 
 `from2to list` prints all of them.
 
@@ -111,6 +119,87 @@ $ f2t hex bin ff        # word names work too
 $ f2t hex2bin ff        # so does a whole command name
 11111111
 ```
+
+## When you don't know the format: `whatbase`
+
+Every command above needs you to already know what you are holding. `whatbase`
+is the other direction — paste the blob and be told what it plausibly is:
+
+```console
+$ whatbase bDNhcm5fdGgzX3IwcDM1
+b64       96%   l3arn_th3_r0p35
+         all 20 characters are in the base64 alphabet
+         length 20 is a multiple of 4
+         decodes to printable text
+         b64url reads the same here — no + / - _ to tell them apart
+
+  try: b642char bDNhcm5fdGgzX3IwcDM1
+
+  could also be: char 26%
+```
+
+`f2t detect` is the same thing spelled out, for when you have not installed the
+shims.
+
+| Flag | Effect |
+|---|---|
+| `-d`, `--decode` | skip the report, print what the best guess decodes to |
+| `-q`, `--quiet` | print just the format name, for scripts |
+| `-a`, `--all` | every candidate, including the implausible ones |
+| `--to <fmt>` | with `--decode`, decode into something other than `char` |
+
+So the one-liner for a challenge string is:
+
+```console
+$ whatbase -d bDNhcm5fdGgzX3IwcDM1
+l3arn_th3_r0p35
+```
+
+and the name it prints is one the converter accepts, so the two compose:
+
+```console
+$ f2t "$(whatbase -q "$blob")" char "$blob"
+```
+
+### How it decides
+
+Three questions, none of which is enough alone:
+
+1. **Does the alphabet admit it?** A hard gate — one `z` rules out hex.
+2. **Is it the *narrowest* alphabet that admits it?** `01010101` sits inside
+   base64's alphabet perfectly happily, but nobody writes base64 that way. This
+   is what makes the answer `bin`, and what stops `1234567890` reading as hex.
+3. **Does the payload look like anything?** The question that separates base64
+   from base32hex on a string both of them accept: only one decodes to words.
+
+Question 3 counts asymmetrically, on purpose. For base64 and base32, a decode
+that produces noise is real evidence against the guess — those encodings exist
+to carry something. For a positional base it is not: `1234567890` is a perfectly
+good decimal number and owes nobody a printable decoding.
+
+The score is a confidence, and only means anything next to the other
+candidates. Short inputs are genuinely ambiguous and it will say so rather than
+pick a winner it cannot justify:
+
+```console
+$ whatbase -a ff
+hex       59%
+         1 token of nothing but base-16 digits
+         2 digits — a whole number of bytes
+         the decoding is not obviously text
+
+  try: hex2char ff
+
+char      25%
+b32       23%
+b64       20%
+b32hex    20%
+```
+
+Two deliberate limits. `whatbase` never guesses at ciphers — a rot13 string is
+text, and it will tell you it is text. And an interior *space* rules out the
+encodings entirely, since it is the strongest hint in the string that you are
+looking at words; line breaks do not, so wrapped base64 still works.
 
 ## Input
 

@@ -6,9 +6,9 @@
 use std::io::{self, BufRead, BufWriter, Read, Write};
 use std::process::ExitCode;
 
-use from2to::convert::{ConvError, Converter};
+use from2to::convert::{ConvError, Converter, Options};
 use from2to::format::Format;
-use from2to::{install, names, opts};
+use from2to::{detect, install, names, opts};
 
 fn main() -> ExitCode {
     match run() {
@@ -41,10 +41,17 @@ fn run() -> Fallible<ExitCode> {
         return convert(from, to, values, &m);
     }
 
+    // The one installed command that identifies a format instead of converting.
+    if prog == names::DETECT_NAME {
+        let m = opts::detect_command(&prog).get_matches_from(&argv);
+        return run_detect(&m);
+    }
+
     // Invoked as itself.
     let m = opts::self_command(&prog).get_matches_from(&argv);
 
     match m.subcommand() {
+        Some(("detect", sm)) => return run_detect(sm),
         Some(("install", sm)) => {
             let dir = sm.get_one::<String>("dir").map(String::as_str);
             let dry = sm.get_flag("dry-run");
@@ -94,6 +101,45 @@ fn run() -> Fallible<ExitCode> {
 
     let values = collect_values(&m, leading);
     convert(from, to, values, &m)
+}
+
+/// `whatbase` and `f2t detect`: say what the input is instead of converting it.
+///
+/// Exits non-zero when there is nothing to identify, so a script can branch on
+/// it the same way it would on a failed conversion.
+fn run_detect(m: &clap::ArgMatches) -> Fallible<ExitCode> {
+    let values = collect_values(m, Vec::new());
+    let input = if values.is_empty() {
+        let mut buf = Vec::new();
+        io::stdin().lock().read_to_end(&mut buf)?;
+        String::from_utf8_lossy(&buf).into_owned()
+    } else {
+        values.join(" ")
+    };
+    let input = input.trim();
+
+    let cands = detect::detect(input);
+    let Some(best) = cands.first() else {
+        eprintln!("{}: nothing to identify", prog_name());
+        return Ok(ExitCode::FAILURE);
+    };
+
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+    if m.get_flag("name") {
+        writeln!(out, "{}", best.format)?;
+    } else if m.get_flag("decode") {
+        let to = match m.get_one::<String>("to") {
+            Some(t) => Format::parse(t).ok_or_else(|| format!("unknown format '{t}'"))?,
+            None => Format::Char,
+        };
+        let text = Converter::new(best.format, to, Options::default()).convert(input)?;
+        writeln!(out, "{}", text.strip_suffix('\n').unwrap_or(&text))?;
+    } else {
+        write!(out, "{}", detect::report(input, &cands, m.get_flag("all")))?;
+    }
+    out.flush()?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn collect_values(m: &clap::ArgMatches, mut leading: Vec<String>) -> Vec<String> {

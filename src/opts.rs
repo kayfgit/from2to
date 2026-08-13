@@ -16,6 +16,7 @@ EXAMPLES:
     char2hex hello                68656c6c6f
     hex2b64 68656c6c6f            aGVsbG8=
     f2t 36 10 zz                  1295       (any base 2-36)
+    whatbase bDNhcm5fdGgzX3IwcDM1 b64        (when you do not know the base)
 
     nc example.com 4000 | dec2char
         decode a stream of decimal code points as it arrives
@@ -128,6 +129,68 @@ fn common_args(cmd: Command) -> Command {
     )
 }
 
+const DETECT_ABOUT: &str = "Work out what format a piece of text is in";
+
+const DETECT_AFTER_HELP: &str = "\
+EXAMPLES:
+    whatbase bDNhcm5fdGgzX3IwcDM1     b64 96%   l3arn_th3_r0p35
+    whatbase -d bDNhcm5fdGgzX3IwcDM1  l3arn_th3_r0p35
+    whatbase -q bDNhcm5fdGgzX3IwcDM1  b64
+    whatbase -a 01010101              every reading, worst included
+
+Input comes from the arguments, or from stdin when none are given. The score
+is a confidence, and only means anything next to the other candidates.";
+
+/// The detector's flags, shared by the `whatbase` shim and `f2t detect` so the
+/// two cannot drift apart.
+fn detect_args(cmd: Command) -> Command {
+    cmd.arg(
+        Arg::new("all")
+            .short('a')
+            .long("all")
+            .action(ArgAction::SetTrue)
+            .help("Show every candidate, not just the likely ones"),
+    )
+    .arg(
+        Arg::new("decode")
+            .short('d')
+            .long("decode")
+            .action(ArgAction::SetTrue)
+            .help("Print what the best guess decodes to, and nothing else"),
+    )
+    .arg(
+        Arg::new("name")
+            .short('q')
+            .long("quiet")
+            .action(ArgAction::SetTrue)
+            .conflicts_with("decode")
+            .help("Print just the format name, for scripts"),
+    )
+    .arg(
+        Arg::new("to")
+            .long("to")
+            .value_name("FMT")
+            .help("With --decode, the format to decode into (default: char)"),
+    )
+    .arg(
+        Arg::new("values")
+            .num_args(0..)
+            .value_name("TEXT")
+            .help("Text to identify; omit to read stdin"),
+    )
+}
+
+/// The detector under its own command name.
+pub fn detect_command(invoked_as: &str) -> Command {
+    let name: &'static str = Box::leak(invoked_as.to_string().into_boxed_str());
+    detect_args(
+        Command::new(name)
+            .about(DETECT_ABOUT)
+            .version(env!("CARGO_PKG_VERSION"))
+            .after_help(DETECT_AFTER_HELP),
+    )
+}
+
 /// The command as seen through a shim: formats are already known.
 ///
 /// clap wants a `'static` name and the process is about to exit either way, so
@@ -191,6 +254,11 @@ pub fn self_command(invoked_as: &str) -> Command {
                             .help("Show what would be removed, change nothing"),
                     ),
             )
+            .subcommand(detect_args(
+                Command::new("detect")
+                    .about(DETECT_ABOUT)
+                    .after_help(DETECT_AFTER_HELP),
+            ))
             .subcommand(Command::new("list").about("List every command name")),
     )
 }

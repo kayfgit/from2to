@@ -154,6 +154,74 @@ fn shim_help_names_the_conversion() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+// ----------------------------------------------------------- detection
+
+#[test]
+fn detect_identifies_a_base64_challenge_string() {
+    let out = run(&["detect", "bDNhcm5fdGgzX3IwcDM1"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.starts_with("b64"), "{}", out.stdout);
+    assert!(out.stdout.contains("l3arn_th3_r0p35"), "{}", out.stdout);
+    // And it hands back a command that finishes the job.
+    assert!(
+        out.stdout.contains("b642char bDNhcm5fdGgzX3IwcDM1"),
+        "{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn detect_can_decode_in_one_step_or_name_the_format() {
+    assert_eq!(
+        run(&["detect", "-d", "bDNhcm5fdGgzX3IwcDM1"]).out(),
+        "l3arn_th3_r0p35"
+    );
+    assert_eq!(run(&["detect", "-q", "bDNhcm5fdGgzX3IwcDM1"]).out(), "b64");
+    assert_eq!(run(&["detect", "-q", "68656c6c6f"]).out(), "hex");
+    assert_eq!(run(&["detect", "-q", "01010101"]).out(), "bin");
+    // The named format is one the converter accepts, so the two compose.
+    assert_eq!(run(&["b64", "char", "bDNhcm5fdGgzX3IwcDM1"]).out(), "l3arn_th3_r0p35");
+}
+
+#[test]
+fn detect_reads_stdin_and_reports_runners_up() {
+    let out = run_stdin(&["detect"], "aGVsbG8=\n");
+    assert_eq!(out.code, 0);
+    assert!(out.stdout.starts_with("b64"), "{}", out.stdout);
+    assert!(out.stdout.contains("hello"), "{}", out.stdout);
+
+    let all = run(&["detect", "--all", "01010101"]);
+    assert!(all.stdout.lines().count() > 4, "{}", all.stdout);
+    assert!(all.stdout.contains("oct"), "{}", all.stdout);
+}
+
+#[test]
+fn whatbase_works_through_its_own_name() {
+    let dir = temp_dir("whatbase");
+    let shim = make_shim(&dir, "whatbase");
+
+    assert_eq!(run_exe(&shim, &["-q", "bDNhcm5fdGgzX3IwcDM1"], None).out(), "b64");
+    assert_eq!(
+        run_exe(&shim, &["-d", "bDNhcm5fdGgzX3IwcDM1"], None).out(),
+        "l3arn_th3_r0p35"
+    );
+    let help = run_exe(&shim, &["--help"], None);
+    assert!(help.stdout.contains("Work out what format"), "{}", help.stdout);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn detect_says_when_text_is_already_text() {
+    let out = run(&["detect", "-q", "hello world"]);
+    assert_eq!(out.out(), "char");
+    assert_eq!(out.code, 0);
+
+    let out = run_stdin(&["detect"], "");
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("nothing to identify"), "{}", out.stderr);
+}
+
 // ----------------------------------------------------------- errors
 
 #[test]
@@ -205,9 +273,10 @@ fn list_names_every_command() {
     let out = run(&["list"]);
     assert_eq!(out.code, 0);
     let lines: Vec<&str> = out.stdout.lines().collect();
-    assert_eq!(lines.len(), 62);
+    assert_eq!(lines.len(), 63);
     assert!(lines.iter().any(|l| l.starts_with("hex2bin ")));
     assert!(lines.iter().any(|l| l.starts_with("1628 ")));
+    assert!(lines.iter().any(|l| l.starts_with("whatbase ")));
 }
 
 #[test]
@@ -234,8 +303,8 @@ fn install_then_uninstall_round_trips() {
 
     let out = run_exe(&exe, &["install", "--dir", dir_s], None);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    // 62 shims + f2t + the binary.
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 64);
+    // 62 shims + whatbase + f2t + the binary.
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 65);
 
     // A shim really works.
     let shim = dir.join(format!("hex2bin{EXE_SUFFIX}"));

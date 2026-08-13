@@ -125,9 +125,10 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     false
 }
 
-/// Names to create: every conversion, plus the short self-name.
+/// Names to create: every conversion, the detector, plus the short self-name.
 fn all_names() -> Vec<String> {
     let mut names: Vec<String> = names::shim_names().into_iter().map(|(n, _, _)| n).collect();
+    names.push(names::DETECT_NAME.to_string());
     names.push(names::SHORT_NAME.to_string());
     names
 }
@@ -325,6 +326,7 @@ pub fn list() {
     for (name, from, to) in names::shim_names() {
         println!("{name:<12} {from} -> {to}");
     }
+    println!("{:<12} identify the format of some text", names::DETECT_NAME);
 }
 
 #[cfg(test)]
@@ -334,10 +336,11 @@ mod tests {
     #[test]
     fn all_names_includes_shims_and_short_self_name() {
         let names = all_names();
-        assert_eq!(names.len(), 63);
+        assert_eq!(names.len(), 64);
         assert!(names.contains(&"hex2bin".to_string()));
         assert!(names.contains(&"1628".to_string()));
         assert!(names.contains(&"f2t".to_string()));
+        assert!(names.contains(&"whatbase".to_string()));
         // The real binary name is never a shim; it is what shims point at.
         assert!(!names.contains(&"from2to".to_string()));
     }

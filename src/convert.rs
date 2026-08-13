@@ -220,7 +220,10 @@ pub struct Options {
 // ---------------------------------------------------------------- decoding
 
 /// Strip the leniency affordances: a base-appropriate prefix and `_` spacers.
-fn clean_token<'a>(tok: &'a str, base: u32, strict: bool) -> std::borrow::Cow<'a, str> {
+///
+/// Shared with `detect`, which has to accept exactly what this accepts or it
+/// would rule out inputs the converter would have handled.
+pub(crate) fn clean_token<'a>(tok: &'a str, base: u32, strict: bool) -> std::borrow::Cow<'a, str> {
     if strict {
         return std::borrow::Cow::Borrowed(tok);
     }

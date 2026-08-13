@@ -31,6 +31,11 @@ pub const SELF_NAMES: [&str; 2] = ["from2to", "f2t"];
 /// The short name installed alongside the conversions.
 pub const SHORT_NAME: &str = "f2t";
 
+/// The one installed command that is not a conversion: it identifies a format
+/// instead of converting between two. It has no `2` in it, so the splitting
+/// rule below never claims it.
+pub const DETECT_NAME: &str = "whatbase";
+
 /// The numeric shorthand table, e.g. `1628` = hex to oct.
 ///
 /// Only bases {2, 8, 10, 16} appear here, and that restriction is load-bearing:
@@ -147,6 +152,9 @@ mod tests {
     fn self_names_are_not_conversions() {
         assert_eq!(resolve("f2t"), None);
         assert_eq!(resolve("from2to"), None);
+        // The detector is dispatched on separately; it must never look like a
+        // conversion, or it would be handled as one.
+        assert_eq!(resolve(DETECT_NAME), None);
     }
 
     /// The property the shorthand table depends on. If this ever fails, the

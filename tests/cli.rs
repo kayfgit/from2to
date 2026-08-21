@@ -1,7 +1,7 @@
 //! End-to-end tests: the real binary, run the way a user runs it.
 
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -22,17 +22,31 @@ impl Output {
 }
 
 fn run_exe(exe: &Path, args: &[&str], stdin: Option<&str>) -> Output {
-    let mut child = Command::new(exe)
-        .args(args)
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn");
+    let mut tries = 0;
+    // Retried, because of a race Linux has and Windows does not: while one
+    // thread is still holding the write fd from `fs::copy`, another thread
+    // that forks inherits it, and the binary reads as busy until that child
+    // execs. Nothing is wrong with the file — it is ready a moment later.
+    let mut child = loop {
+        let attempt = Command::new(exe)
+            .args(args)
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        match attempt {
+            Ok(c) => break c,
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < 100 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => panic!("failed to spawn {}: {e:?}", exe.display()),
+        }
+    };
 
     if let Some(input) = stdin {
         child
@@ -491,6 +505,14 @@ fn symlink_shims_survive_the_binary_being_replaced() {
     bytes.extend_from_slice(b"\n// a later build\n");
     fs::remove_file(&exe).unwrap();
     fs::write(&exe, &bytes).unwrap();
+    // `fs::write` creates 0644, but the thing it stands in for writes an
+    // executable. Without this the replaced binary cannot be run at all,
+    // and the uninstall below fails with a bare "Permission denied".
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 
     assert_eq!(
         fs::read(&shim).unwrap(),

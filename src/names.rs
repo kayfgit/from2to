@@ -378,8 +378,17 @@ mod tests {
 
     #[test]
     fn basename_strips_path_and_extension() {
-        assert_eq!(basename(r"C:\Users\x\.cargo\bin\hex2bin.exe"), "hex2bin");
         assert_eq!(basename("/usr/local/bin/dec2char"), "dec2char");
+        assert_eq!(basename("hex2bin"), "hex2bin");
         assert_eq!(basename("HEX2BIN.EXE"), "hex2bin");
+
+        // `Path` splits on the *host's* separator, so a Windows path only
+        // reads as one on Windows. On Unix a backslash is an ordinary
+        // filename character, and `argv[0]` there would never carry one —
+        // so asserting the Windows shape everywhere tested the host, not us.
+        #[cfg(windows)]
+        assert_eq!(basename(r"C:\Users\x\.cargo\bin\hex2bin.exe"), "hex2bin");
+        #[cfg(not(windows))]
+        assert_eq!(basename("/home/you/.cargo/bin/hex2bin"), "hex2bin");
     }
 }

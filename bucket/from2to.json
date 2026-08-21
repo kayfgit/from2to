@@ -6,7 +6,7 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/kayfgit/from2to/releases/download/v0.3.0/from2to-0.3.0-x86_64-pc-windows-msvc.zip",
-            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "hash": "97847f58cb014dc21b34352f90968322f1d42274e692e4cb0a12d8c29173bb67",
             "extract_dir": "from2to-0.3.0-x86_64-pc-windows-msvc"
         }
     },

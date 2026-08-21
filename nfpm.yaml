@@ -1,0 +1,34 @@
+# .deb and .rpm, built from an already-compiled musl binary by the release
+# workflow. `nfpm pkg -f nfpm.yaml -p deb -t dist/`, with VERSION and ARCH set.
+#
+# Deliberately no post-install hook. The package installs one binary; the
+# per-conversion commands stay an opt-in second step, because writing sixty
+# files into a directory on PATH is not something a package manager should do
+# to you behind your back. `from2to install` picks a writable directory on its
+# own, so it works from /usr/bin without root.
+name: from2to
+arch: ${ARCH}
+version: ${VERSION}
+version_schema: semver
+section: utils
+priority: optional
+maintainer: kayfgit <212810682+kayfgit@users.noreply.github.com>
+description: |
+  Fast conversion at the terminal: hex2bin, dec2char, hex2b64, and friends.
+  One binary answers to about sixty-five names, including little-endian
+  variants such as lehex2dec for reading values out of a memory dump.
+vendor: kayfgit
+homepage: https://github.com/kayfgit/from2to
+license: MIT
+
+contents:
+  - src: stage/from2to
+    dst: /usr/bin/from2to
+  - src: stage/from2to.1.gz
+    dst: /usr/share/man/man1/from2to.1.gz
+  - src: ./README.md
+    dst: /usr/share/doc/from2to/README.md
+  - src: ./CHANGELOG.md
+    dst: /usr/share/doc/from2to/CHANGELOG.md
+  - src: ./LICENSE
+    dst: /usr/share/doc/from2to/LICENSE

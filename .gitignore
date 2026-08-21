@@ -40,6 +40,26 @@ Desktop.ini
 # meant to be shared, so it is deliberately not ignored.
 .claude/settings.local.json
 
+# Personal working notes. These are mine, not the project's — a public repo is
+# not the place for a private runbook or a scratch todo list.
+.release-runbook.html
+todos.md
+NOTES.md
+/notes/
+/scratch/
+
+# Signing and deploy keys. Nothing here should ever hold one, but a stray
+# `cp ~/.ssh/aur .` while setting up the AUR would otherwise be one `git add -A`
+# away from publishing a private key.
+id_rsa*
+id_ed25519*
+*_rsa
+*_ed25519
+!*.pub
+*.gpg
+*.asc
+secring.*
+
 # Scratch
 *.log
 

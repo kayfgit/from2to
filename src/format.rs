@@ -54,6 +54,16 @@ impl Format {
         }
     }
 
+    /// True when a digit boundary can also be a byte boundary.
+    ///
+    /// Bases 2, 4 and 16 pack a whole number of digits into a byte; base 8
+    /// (3 bits) and base 32 (5 bits) do not. That matters for byte order: in a
+    /// byte-aligned base the digits you wrote *are* a byte count, and
+    /// everywhere else the width has to be supplied with `--word`.
+    pub fn byte_aligned(self) -> bool {
+        matches!(self.bits_per_digit(), Some(b) if 8 % b == 0)
+    }
+
     /// True for formats whose natural currency is bytes rather than a number.
     pub fn is_byteish(self) -> bool {
         !self.is_positional()
@@ -92,6 +102,18 @@ impl Format {
         };
         Some(f)
     }
+
+    /// Every word spelling [`parse`](Format::parse) accepts.
+    ///
+    /// It exists so tests can assert properties over the whole set — in
+    /// particular that none of them starts with `le` or `be`, and that none
+    /// holds both a `2` and an `l`. Those two facts are what make the endian
+    /// prefixes in command names unambiguous; see `names`.
+    pub const SPELLINGS: [&'static str; 29] = [
+        "bin", "b", "binary", "oct", "o", "octal", "dec", "d", "decimal", "int", "hex", "h",
+        "hexadecimal", "char", "chr", "ascii", "text", "str", "raw", "utf8", "b64", "base64",
+        "b64url", "base64url", "b64u", "b32", "base32", "b32hex", "base32hex",
+    ];
 
     /// The canonical short name, as used in command names.
     pub fn name(self) -> &'static str {
@@ -150,6 +172,29 @@ mod tests {
         assert_eq!(Format::DEC.bits_per_digit(), None);
         assert_eq!(Format::Positional(36).bits_per_digit(), None);
         assert_eq!(Format::Char.bits_per_digit(), None);
+    }
+
+    /// `SPELLINGS` is a hand-written copy of the `match` in `parse`, so it can
+    /// drift. This is what stops it.
+    #[test]
+    fn byte_alignment_follows_the_bit_width() {
+        // 8, 4 and 2 digits to the byte.
+        assert!(Format::BIN.byte_aligned());
+        assert!(Format::Positional(4).byte_aligned());
+        assert!(Format::HEX.byte_aligned());
+        // 3 and 5 bits per digit never land on a byte boundary.
+        assert!(!Format::OCT.byte_aligned());
+        assert!(!Format::Positional(32).byte_aligned());
+        // Not a power of two, so not even a bit width.
+        assert!(!Format::DEC.byte_aligned());
+        assert!(!Format::Char.byte_aligned());
+    }
+
+    #[test]
+    fn every_spelling_parses() {
+        for s in Format::SPELLINGS {
+            assert!(Format::parse(s).is_some(), "`{s}` is listed but does not parse");
+        }
     }
 
     #[test]

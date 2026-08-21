@@ -8,6 +8,7 @@
 //!    which is what `dec2char` sees.
 //! 3. Anything else: `BigUint`.
 
+use crate::endian::{Endian, swap_words};
 use crate::format::Format;
 use data_encoding::{BASE32, BASE32HEX, BASE32HEX_NOPAD, BASE32_NOPAD, BASE64, BASE64URL,
                     BASE64URL_NOPAD, BASE64_NOPAD, Encoding};
@@ -29,6 +30,16 @@ pub enum ConvError {
     NotACodepoint { token: String },
     NotAByte { token: String },
     BadEncoding { format: String, detail: String },
+    /// A byte order was asked for where no byte width can be worked out.
+    NoByteWidth { format: String },
+    /// A byte order was asked for on code points, which are not bytes.
+    EndianNeedsBytes,
+    /// A token's digits do not add up to a whole number of bytes.
+    NotWholeBytes { token: String, base: u32 },
+    /// A run of bytes is not a whole number of `--word` sized words.
+    RaggedWord { len: usize, word: usize },
+    /// A value needs more room than the word size allows.
+    TooWide { token: String, want: usize },
 }
 
 impl fmt::Display for ConvError {
@@ -44,6 +55,21 @@ impl fmt::Display for ConvError {
             ConvError::NotAByte { token } => write!(f, "'{token}' does not fit in a byte"),
             ConvError::BadEncoding { format, detail } => {
                 write!(f, "invalid {format} input: {detail}")
+            }
+            ConvError::NoByteWidth { format } => {
+                write!(f, "{format} carries no byte width of its own; say how wide the word is: --word 4")
+            }
+            ConvError::EndianNeedsBytes => {
+                write!(f, "byte order applies to bytes, but char is being read as code points here; add --bytes")
+            }
+            ConvError::NotWholeBytes { token, base } => {
+                write!(f, "'{token}' is not a whole number of bytes in base {base}; pad it or add --word")
+            }
+            ConvError::RaggedWord { len, word } => {
+                write!(f, "{len} bytes is not a whole number of {word}-byte words")
+            }
+            ConvError::TooWide { token, want } => {
+                write!(f, "'{token}' does not fit in {want} bytes")
             }
         }
     }
@@ -215,6 +241,13 @@ pub struct Options {
     pub strict: bool,
     /// Skip tokens that fail to convert instead of aborting.
     pub keep_going: bool,
+    /// Byte order of the input and of the output. `Big` on both sides is the
+    /// identity, and is checked for explicitly so that every conversion that
+    /// existed before byte order did still takes the same code path.
+    pub from_endian: Endian,
+    pub to_endian: Endian,
+    /// Bytes per word for the byte-order swap. `None` means "the whole value".
+    pub word: Option<usize>,
 }
 
 // ---------------------------------------------------------------- decoding
@@ -331,7 +364,43 @@ impl Converter {
     /// place its padding, so those conversions buffer to EOF. Everything else
     /// streams, which is what makes `nc host port | dec2char` print live.
     pub fn buffers_output(&self) -> bool {
-        self.to.is_encoding()
+        self.to.is_encoding() || self.swap_needs_whole_input()
+    }
+
+    /// True when a byte-order swap has to see the whole input at once.
+    ///
+    /// A swap over a *run* of bytes has no token boundaries to work with, so
+    /// reading it a line at a time would reverse each line independently —
+    /// a wrong answer, not merely a slow one. A swap inside a positional token
+    /// is safe, because a token is complete before it is converted.
+    ///
+    /// What decides it is the **source**, not whichever side wears the `le`:
+    /// the source is what determines whether `reorder` sees one byte run or a
+    /// list of tokens. `char2lehex` swaps a run even though its `le` is on the
+    /// hex side, so it has to buffer.
+    fn swap_needs_whole_input(&self) -> bool {
+        (self.opts.from_endian.is_little() || self.opts.to_endian.is_little())
+            && self.from.is_byteish()
+    }
+
+    /// Reject a configuration that cannot mean anything, before reading input.
+    ///
+    /// A byte order needs a byte width. A run of bytes is its own width, and a
+    /// byte-aligned base writes a known number of digits per byte — but base
+    /// 10 and base 8 carry no width at all, and inferring one from the value
+    /// would make the word size depend on the value. That is how a swap
+    /// silently produces the wrong address, so it is an error instead.
+    pub fn check(&self) -> Result<(), ConvError> {
+        if !self.opts.from_endian.is_little() && !self.opts.to_endian.is_little() {
+            return Ok(());
+        }
+        if self.opts.word.is_some_and(|w| w > 0) {
+            return Ok(());
+        }
+        if self.from.is_byteish() || self.from.byte_aligned() {
+            return Ok(());
+        }
+        Err(ConvError::NoByteWidth { format: self.from.to_string() })
     }
 
     /// Whether input arrives as tokens (positional) or as an opaque run of
@@ -373,7 +442,7 @@ impl Converter {
     /// True when input can be processed a line at a time and written straight
     /// out. base64 and base32 need the whole stream at either end.
     pub fn can_stream(&self) -> bool {
-        !self.from.is_encoding() && !self.to.is_encoding()
+        !self.from.is_encoding() && !self.to.is_encoding() && !self.swap_needs_whole_input()
     }
 
     // ---- number formatting
@@ -437,28 +506,155 @@ impl Converter {
         }
     }
 
-    fn num_to_bytes(&self, n: &Num) -> Vec<u8> {
+}
+
+// ------------------------------------------------------------ bytes of a number
+
+/// The bytes of a number, at the width its digits imply.
+///
+/// Free rather than a method: the body never looked at `self`, and the
+/// byte-order pass needs it from outside the impl.
+fn num_to_bytes(n: &Num) -> Vec<u8> {
+    match n.bits_per_digit() {
+        Some(fb) => {
+            let minimal = {
+                let significant = n.digits.iter().position(|&d| d != 0).unwrap_or(n.digits.len());
+                let bits = (n.digits.len() - significant) * fb as usize;
+                bits.div_ceil(8).max(1)
+            };
+            let want = byte_width(n, minimal);
+            regroup_to(&n.digits, fb, 8, want)
+        }
+        None => {
+            let bytes = n.to_mag().to_bytes_be();
+            let want = byte_width(n, bytes.len());
+            let mut out = vec![0u8; want - bytes.len()];
+            out.extend_from_slice(&bytes);
+            out
+        }
+    }
+}
+
+/// The bytes of `n` at exactly `want` bytes: zero-extended on the left, and an
+/// error rather than a silent truncation when the value needs more room.
+fn num_to_bytes_at(n: &Num, want: usize) -> Result<Vec<u8>, ConvError> {
+    let b = num_to_bytes(n);
+    if b.len() > want {
+        let cut = b.len() - want;
+        if b[..cut].iter().any(|&x| x != 0) {
+            return Err(ConvError::TooWide { token: n.text.clone(), want });
+        }
+        return Ok(b[cut..].to_vec());
+    }
+    let mut out = vec![0u8; want - b.len()];
+    out.extend_from_slice(&b);
+    Ok(out)
+}
+
+/// Rebuild a number from bytes: pure regrouping for a power-of-two base, and
+/// through the magnitude otherwise.
+///
+/// The digit count comes from the byte count, which is what carries a swapped
+/// value's width back into the pipeline so the rest of it never learns that a
+/// swap happened.
+fn num_from_bytes(bytes: &[u8], base: u32, text: String) -> Num {
+    match base.is_power_of_two().then(|| base.trailing_zeros()) {
+        Some(tb) => {
+            let out_len = (bytes.len() * 8).div_ceil(tb as usize).max(1);
+            Num { digits: regroup_to(bytes, 8, tb, out_len), base, text }
+        }
+        None => {
+            let mut m = Mag::Small(0);
+            for &b in bytes {
+                m.mul_add(256, b);
+            }
+            let digits = m
+                .to_str_radix(base)
+                .chars()
+                .map(|c| c.to_digit(base).unwrap() as u8)
+                .collect();
+            Num { digits, base, text }
+        }
+    }
+}
+
+impl Converter {
+    // ---- the two directions
+
+    /// How many bytes of this token the swap should cover.
+    fn byte_span(&self, n: &Num) -> Result<usize, ConvError> {
+        if let Some(w) = self.opts.word.filter(|w| *w > 0) {
+            // An explicit word size settles the width outright, and a short
+            // value is zero-extended to fill it.
+            return Ok(num_to_bytes(n).len().div_ceil(w).max(1) * w);
+        }
         match n.bits_per_digit() {
-            Some(fb) => {
-                let minimal = {
-                    let significant = n.digits.iter().position(|&d| d != 0).unwrap_or(n.digits.len());
-                    let bits = (n.digits.len() - significant) * fb as usize;
-                    bits.div_ceil(8).max(1)
-                };
-                let want = byte_width(n, minimal);
-                regroup_to(&n.digits, fb, 8, want)
+            Some(bits) if 8 % bits == 0 => {
+                let total = n.digits.len() * bits as usize;
+                if total % 8 != 0 {
+                    // An odd hex digit count has no byte boundary to swap on,
+                    // and rounding it either way is a guess.
+                    return Err(ConvError::NotWholeBytes {
+                        token: n.text.clone(),
+                        base: n.base,
+                    });
+                }
+                Ok(total / 8)
             }
-            None => {
-                let bytes = n.to_mag().to_bytes_be();
-                let want = byte_width(n, bytes.len());
-                let mut out = vec![0u8; want - bytes.len()];
-                out.extend_from_slice(&bytes);
-                out
-            }
+            // No width of its own. `check` refuses this configuration up
+            // front, but the engine must not depend on having been asked:
+            // inferring a width from the value here is exactly the silent
+            // wrong answer the error exists to prevent.
+            _ => Err(ConvError::NoByteWidth { format: Format::Positional(n.base).to_string() }),
         }
     }
 
-    // ---- the two directions
+    /// Put the value into, or take it out of, little-endian byte order.
+    ///
+    /// The swap is defined on bytes, so every arm has to say where its bytes
+    /// and its width come from. Numbers swap per token; a run of bytes swaps
+    /// as one run, or per `--word` chunk.
+    fn reorder(&self, s: Stream, warnings: &mut Vec<ConvError>) -> Result<Stream, ConvError> {
+        let word = self.opts.word.filter(|w| *w > 0);
+        match s {
+            Stream::Bytes(mut b) => {
+                if swap_words(&mut b, word).is_err() {
+                    let e = ConvError::RaggedWord {
+                        len: b.len(),
+                        word: word.unwrap_or(1),
+                    };
+                    if !self.opts.keep_going {
+                        return Err(e);
+                    }
+                    warnings.push(e);
+                }
+                Ok(Stream::Bytes(b))
+            }
+            Stream::Nums(nums) => {
+                let mut out = Vec::with_capacity(nums.len());
+                for n in nums {
+                    let bytes = self
+                        .byte_span(&n)
+                        .and_then(|want| num_to_bytes_at(&n, want));
+                    let mut bytes = match bytes {
+                        Ok(b) => b,
+                        Err(e) if self.opts.keep_going => {
+                            warnings.push(e);
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    // Padded to a multiple of the word size above, so the
+                    // ragged case cannot arise here.
+                    let _ = swap_words(&mut bytes, word);
+                    out.push(num_from_bytes(&bytes, n.base, n.text));
+                }
+                Ok(Stream::Nums(out))
+            }
+            // Reversing code points is `rev`, not endianness.
+            Stream::Codepoints(_) => Err(ConvError::EndianNeedsBytes),
+        }
+    }
 
     /// Decode a chunk of source text into the intermediate form.
     fn decode(&self, input: &str, warnings: &mut Vec<ConvError>) -> Result<Stream, ConvError> {
@@ -492,7 +688,7 @@ impl Converter {
     fn to_bytes(&self, s: &Stream) -> Result<Vec<u8>, ConvError> {
         Ok(match s {
             Stream::Bytes(b) => b.clone(),
-            Stream::Nums(nums) => nums.iter().flat_map(|n| self.num_to_bytes(n)).collect(),
+            Stream::Nums(nums) => nums.iter().flat_map(num_to_bytes).collect(),
             Stream::Codepoints(chars) => chars.iter().collect::<String>().into_bytes(),
         })
     }
@@ -506,7 +702,19 @@ impl Converter {
         carry: &mut Vec<u8>,
         warnings: &mut Vec<ConvError>,
     ) -> Result<String, ConvError> {
-        let stream = self.decode(input, warnings)?;
+        let mut stream = self.decode(input, warnings)?;
+
+        // Normalize the source's byte order in, and the target's out. Between
+        // these two lines everything works in reading order and knows nothing
+        // about endianness. When both ends are big-endian — which is every
+        // conversion that existed before byte order did — neither pass runs.
+        if self.opts.from_endian.is_little() {
+            stream = self.reorder(stream, warnings)?;
+        }
+        if self.opts.to_endian.is_little() {
+            stream = self.reorder(stream, warnings)?;
+        }
+
         let delim = self.delim().to_string();
 
         match self.to {
@@ -651,6 +859,169 @@ mod tests {
             opts,
         );
         c.convert(input).unwrap()
+    }
+
+    // ---- byte order
+
+    /// Convert through a command name, the way a shim would.
+    fn le(name: &str, input: &str) -> Result<String, ConvError> {
+        le_opts(name, input, Options::default())
+    }
+
+    fn le_opts(name: &str, input: &str, mut opts: Options) -> Result<String, ConvError> {
+        let (from, to) = crate::names::resolve(name).unwrap();
+        opts.from_endian = from.endian;
+        opts.to_endian = to.endian;
+        let c = Converter::new(from.format, to.format, opts);
+        c.check()?;
+        c.convert(input)
+    }
+
+    fn worded(name: &str, input: &str, word: usize) -> Result<String, ConvError> {
+        le_opts(name, input, Options { word: Some(word), ..Default::default() })
+    }
+
+    #[test]
+    fn little_endian_reverses_a_written_word() {
+        // 0x0d0c0b0a read back to front is 0x0a0b0c0d.
+        assert_eq!(le("lehex2dec", "0d0c0b0a").unwrap(), "168496141");
+        assert_eq!(le("lehex2hex", "0d0c0b0a").unwrap(), "0a0b0c0d");
+        assert_eq!(le("lehex2char", "6f6c6c6568").unwrap(), "hello");
+        assert_eq!(le("hex2lebin", "ff00").unwrap(), "0000000011111111");
+    }
+
+    /// A single byte has no byte order, so the swap is a no-op rather than an
+    /// error — `lehex2dec ff` must agree with `hex2dec ff`.
+    #[test]
+    fn one_byte_has_no_byte_order() {
+        assert_eq!(le("lehex2dec", "ff").unwrap(), conv("hex", "dec", "ff"));
+        assert_eq!(le("lehex2hex", "ff").unwrap(), "ff");
+    }
+
+    /// `be` is the default written down, so it must change nothing at all.
+    #[test]
+    fn big_endian_is_the_identity() {
+        assert_eq!(le("behex2dec", "0d0c0b0a").unwrap(), conv("hex", "dec", "0d0c0b0a"));
+    }
+
+    /// Two swaps at the same width cancel.
+    #[test]
+    fn swapping_twice_is_the_identity() {
+        assert_eq!(le("lehex2lehex", "0d0c0b0a").unwrap(), "0d0c0b0a");
+    }
+
+    /// Each token is its own value; the swap never runs across whitespace.
+    #[test]
+    fn little_endian_applies_per_token() {
+        assert_eq!(le("lehex2hex", "0102 0304").unwrap(), "0201\n0403");
+    }
+
+    /// An odd hex digit count has no byte boundary to swap on, and rounding it
+    /// either way would be a guess.
+    #[test]
+    fn a_half_byte_is_refused() {
+        assert!(matches!(
+            le("lehex2dec", "fff"),
+            Err(ConvError::NotWholeBytes { .. })
+        ));
+        // ...but `-k` downgrades it, like every other token-level failure.
+        let opts = Options { keep_going: true, ..Default::default() };
+        assert_eq!(le_opts("lehex2dec", "fff 0d0c0b0a", opts).unwrap(), "168496141");
+    }
+
+    /// Base 10 has no width of its own: 255 is a byte and 256 is two, so the
+    /// word size would otherwise depend on the value.
+    #[test]
+    fn a_base_without_a_byte_width_is_refused() {
+        assert!(matches!(le("ledec2hex", "258"), Err(ConvError::NoByteWidth { .. })));
+        assert!(matches!(le("dec2lehex", "1234"), Err(ConvError::NoByteWidth { .. })));
+        // Base 8 is a power of two but 3 bits do not divide 8.
+        assert!(matches!(le("leoct2hex", "777"), Err(ConvError::NoByteWidth { .. })));
+        // A word size settles it.
+        assert_eq!(worded("dec2lehex", "1234", 4).unwrap(), "d2040000");
+        assert_eq!(worded("ledec2hex", "1234", 4).unwrap(), "d2040000");
+    }
+
+    /// `check` is a courtesy to the CLI, not the engine's only guard: a
+    /// library caller that skips it must still not get a guessed width.
+    #[test]
+    fn the_engine_refuses_a_missing_width_even_without_check() {
+        let opts = Options { from_endian: Endian::Little, ..Default::default() };
+        let c = Converter::new(Format::DEC, Format::HEX, opts);
+        assert!(matches!(c.convert("258"), Err(ConvError::NoByteWidth { .. })));
+    }
+
+    #[test]
+    fn a_word_size_pins_the_width() {
+        // `ff` fills a 4-byte word as 000000ff, which reversed is ff000000.
+        assert_eq!(worded("lehex2dec", "ff", 4).unwrap(), "4278190080");
+        // Words are swapped independently; their order is left alone.
+        assert_eq!(worded("lehex2hex", "0d0c0b0a78563412", 4).unwrap(), "0a0b0c0d12345678");
+        assert_eq!(worded("lehex2hex", "0d0c0b0a", 2).unwrap(), "0c0d0a0b");
+    }
+
+    /// Zero-padding a run of bytes would change its length, which is data
+    /// corruption — so it is an error unless the caller asked to keep going.
+    #[test]
+    fn a_ragged_byte_run_is_refused() {
+        assert!(matches!(
+            worded("char2lehex", "hello", 4),
+            Err(ConvError::RaggedWord { len: 5, word: 4 })
+        ));
+    }
+
+    /// Reversing code points is `rev`, not endianness.
+    #[test]
+    fn code_points_have_no_byte_order() {
+        assert!(matches!(
+            le_opts(
+                "char2ledec",
+                "hi",
+                Options { bytes_mode: Some(false), ..Default::default() }
+            ),
+            Err(ConvError::EndianNeedsBytes)
+        ));
+        // As bytes it is perfectly well defined.
+        let opts = Options { bytes_mode: Some(true), ..Default::default() };
+        assert_eq!(le_opts("char2ledec", "hi", opts).unwrap(), "105 104");
+    }
+
+    /// A base64 blob is one value, so the whole decoded run swaps together.
+    #[test]
+    fn an_encoding_blob_is_one_value() {
+        assert_eq!(le("leb642hex", "AQAAAA==").unwrap(), "00000001");
+    }
+
+    /// A swap over a *run* of bytes cannot be done a chunk at a time, and what
+    /// decides that is the source — not whichever side wears the `le`.
+    #[test]
+    fn a_swapped_byte_run_cannot_stream() {
+        let streams = |name: &str| {
+            let (from, to) = crate::names::resolve(name).unwrap();
+            let opts = Options {
+                from_endian: from.endian,
+                to_endian: to.endian,
+                ..Default::default()
+            };
+            Converter::new(from.format, to.format, opts).can_stream()
+        };
+        // char source: the run has no token boundaries to work with.
+        assert!(!streams("char2lehex"));
+        assert!(!streams("lechar2hex"));
+        // Positional source: a token is complete before it is converted.
+        assert!(streams("lehex2dec"));
+        assert!(streams("hex2lechar"));
+        // Nothing that streamed before byte order existed stops streaming.
+        assert!(streams("char2hex"));
+        assert!(streams("hex2char"));
+    }
+
+    /// The swap must stay linear; it is two extra passes, not a quadratic one.
+    #[test]
+    fn a_long_swapped_blob_is_not_quadratic() {
+        let input = "0d0c0b0a".repeat(20_000);
+        let out = le("lehex2hex", &input).unwrap();
+        assert_eq!(out.len(), input.len());
     }
 
     // ---- path 1: power-of-two regrouping

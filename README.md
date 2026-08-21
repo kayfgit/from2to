@@ -18,7 +18,7 @@ flag{d3c0d3d_1n_0n3_p1p3}
 ```
 
 No Python REPL, no `awk`, no looking up `printf` format strings. One binary
-installs ~50 short commands — `hex2bin`, `dec2char`, `char2hex`, `hex2b64` —
+installs ~65 short commands — `hex2bin`, `dec2char`, `char2hex`, `hex2b64` —
 each of which takes its input from the command line or from stdin.
 
 And when you do not know what you are looking at yet, `whatbase` works it out:
@@ -30,18 +30,55 @@ l3arn_th3_r0p35
 
 ## Install
 
-Requires a [Rust toolchain](https://rustup.rs) (1.85 or newer).
+Every route gives you one binary, `from2to`; `from2to install` then creates the
+per-conversion commands. See [why the second step exists](#why-the-second-step-exists).
+
+**A prebuilt binary** — no toolchain needed. Grab the archive for your platform
+from [the latest release](https://github.com/kayfgit/from2to/releases/latest),
+check it against `SHA256SUMS`, and put `from2to` somewhere on your `PATH`. The
+Linux builds are static musl, so they run in stripped-down containers and
+rescue shells too.
+
+**Debian, Ubuntu, Kali, Parrot** — `.deb` for `amd64` and `arm64`:
+
+```console
+$ sudo dpkg -i from2to_0.3.0_amd64.deb
+$ from2to install
+```
+
+**Fedora, RHEL** — `.rpm` from the same release page, via `sudo rpm -i`.
+
+**Arch, BlackArch** — from the AUR:
+
+```console
+$ yay -S from2to-bin
+$ from2to install
+```
+
+**Windows** — with [Scoop](https://scoop.sh):
+
+```console
+> scoop bucket add from2to https://github.com/kayfgit/from2to
+> scoop install from2to
+> from2to install --dir "$env:USERPROFILE\scoop\shims"
+```
+
+The `--dir` matters here: Scoop puts the binary in its own app directory, which
+is not the one on your `PATH`. `from2to install` tells you when the directory it
+picked is not on `PATH`, so you will not be left guessing.
+
+**From source**, with a [Rust toolchain](https://rustup.rs) (1.85 or newer):
 
 ```console
 $ cargo install from2to
 $ from2to install
 ```
 
-The first command gives you one binary, `from2to`. The second creates the
-per-conversion commands next to it and prints where they went:
+The second command creates the per-conversion commands and prints where they
+went:
 
 ```console
-installed 52 commands via symlink in /home/you/.cargo/bin
+installed 66 commands via symlink in /home/you/.cargo/bin
 ```
 
 Open a new shell so they are picked up, then check it worked:
@@ -62,11 +99,17 @@ a symlink there needs Developer Mode or an elevated prompt. `--method
 symlink|hardlink|copy` overrides that, and it falls back through the list if
 your filesystem will not do the first choice.
 
-It is a separate step because writing fifty files into a directory on your
+It is a separate step because writing sixty-odd files into a directory on your
 `PATH` should be something you ask for, not something a package manager does to
 you behind your back.
 
 ### Installing somewhere else
+
+By default the commands go next to the binary. When that directory is not
+yours to write to — which is the case for the `.deb`, `.rpm` and AUR packages,
+where the binary lands in `/usr/bin` — they go to `$XDG_BIN_HOME`, or
+`~/.local/bin` if that is unset. Either way the chosen directory is printed,
+and you are told if it is not on your `PATH`.
 
 `from2to install --dir <path>` puts the commands wherever you like — useful if
 you would rather keep `~/.cargo/bin` tidy. Putting that directory on your `PATH`
@@ -97,6 +140,7 @@ that one needs `--force` before install will touch it.
 | Text | `char` (alias `ascii`): `dec2char`, `hex2char`, `char2hex`, `dec2ascii`, … |
 | Encodings | `b64` `b32`: `hex2b64`, `b642char`, `char2b32`, `b642hex`, … |
 | Generic | `f2t <from> <to>` for any base 2–36 |
+| Byte order | `le`/`be` on either half: `lehex2dec`, `hex2lebin`, `char2lehex`, … |
 | Detection | `whatbase <text>` — when you do not know the format yet |
 | Shorthands | `f2t 1628` = hex→oct, `f2t 10216` = dec→hex, … (not installed as commands) |
 
@@ -284,6 +328,72 @@ aGVsbG8=
 
 Base 10 has no such structure, so decimal results are always bare.
 
+## Byte order
+
+Either half of a name can carry an `le` or `be` prefix. This is the part that
+matters for security work: a value pulled out of a memory dump, a ROP gadget
+address, a struct field read off the wire.
+
+```console
+$ lehex2dec 0d0c0b0a        # 0x0a0b0c0d
+168496141
+$ lehex2hex 0d0c0b0a        # the pure byte swap
+0a0b0c0d
+$ hex2lebin ff00
+0000000011111111
+$ lehex2char 6f6c6c6568
+hello
+```
+
+`be` is the default written down — it changes nothing, and exists so a script
+can be explicit rather than rely on a default it cannot see. Only the `le`
+names are installed as commands, but every combination resolves through `f2t`,
+so `f2t leb642hex` works whether or not you ran `from2to install`.
+
+A byte order only means something when the **byte width** is known, and that
+width comes from how the source wrote the value:
+
+| Source | Width | |
+|---|---|---|
+| `char`, `b64`, `b32` | the run of bytes is its own width | reads to end of input |
+| `hex`, `bin` | byte-aligned, so the digits you wrote are a byte count | `lehex2dec ff` is `255` — one byte has no byte order |
+| `dec`, `oct`, everything else | none of their own | an error until `--word` says how wide |
+
+That last row is deliberate. 255 is one byte and 256 is two, so inferring a
+width from the value would make the word size depend on the value — which is
+how a swap silently hands you the wrong address:
+
+```console
+$ ledec2hex 258
+ledec2hex: dec carries no byte width of its own; say how wide the word is: --word 4
+```
+
+Numbers swap **per token**: `lehex2hex 0102 0304` is two results, not a
+re-reading of four bytes. An odd hex digit count is an error rather than a
+guess, since there is no byte boundary to swap on — `-k` downgrades that to a
+warning like any other bad token.
+
+### `--word`
+
+Groups the bytes into fixed-size words and reverses within each, leaving the
+order of the words alone. This is a hexdump off a 32-bit little-endian machine:
+
+```console
+$ lehex2hex --word 4 0d0c0b0a78563412
+0a0b0c0d12345678
+$ dec2lehex --word 4 1234
+d2040000
+```
+
+`--word` counts *bytes of the value*; `--width` counts *digits of the output*.
+They are independent and may both be given.
+
+Two things worth knowing in advance. `-W` strips the leading zeros of the
+rendered result, which after a swap are the zeros that used to be trailing, so
+`lehex2hex -W 0100` is `1` rather than `0001`. And reversing UTF-8 bytes is not
+reversing characters — `char2lehex é` gives `a9c3`, which is no longer valid
+UTF-8.
+
 ## char: bytes or code points?
 
 `hex2char` reads bytes, because hex digits come in byte-sized pairs.
@@ -310,6 +420,7 @@ $ dec2char 128512
 -j, --join        no separator
 -b, --bytes       treat char as raw bytes
 -c, --codepoint   treat char as Unicode code points
+    --word BYTES  bytes per word, for the le/be names
 -k, --keep-going  skip tokens that fail instead of stopping
 -q, --quiet       suppress warnings
 -n, --no-newline  no trailing newline

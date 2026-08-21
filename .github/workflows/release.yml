@@ -1,0 +1,275 @@
+# Tagged releases: prebuilt binaries, Linux packages, and an AUR PKGBUILD.
+#
+# `cargo install` needs a Rust toolchain, which most of the people this tool is
+# aimed at do not have. Everything here exists so they do not need one.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Catch a mismatched tag before anything is published. A GitHub release can
+  # be deleted, but the crates.io version that follows it cannot, so the cheap
+  # check goes first.
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $manifest"
+            exit 1
+          fi
+          if ! grep -q "^## \[$tag\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$tag]' heading"
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build / ${{ matrix.target }}
+    needs: guard
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl first: static, so it runs in the stripped-down containers and
+          # rescue shells this tool tends to be used from.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked --git https://github.com/cross-rs/cross
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          v="${{ needs.guard.outputs.version }}"
+          name="from2to-$v-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/from2to.exe" "dist/$name/"
+          else
+            cp "target/${{ matrix.target }}/release/from2to" "dist/$name/"
+          fi
+          cp README.md CHANGELOG.md LICENSE "dist/$name/"
+          mkdir -p "dist/$name/man" && cp man/from2to.1 "dist/$name/man/"
+          cd dist
+          # One checksum spelling on every platform. git-bash on the Windows
+          # runner ships sha256sum but defaults to binary mode ("HASH *FILE");
+          # macOS only has shasum. The sed forces the two-space `HASH  FILE`
+          # shape that SHA256SUMS, `sha256sum -c` and Scoop all expect, and
+          # that certutil's uppercase spaced output does not give.
+          sum() {
+            if command -v sha256sum > /dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi               | sed 's/ [ *]/  /'
+          }
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+            sum "$name.zip" > "$name.sha256"
+          else
+            tar czf "$name.tar.gz" "$name"
+            sum "$name.tar.gz" > "$name.sha256"
+          fi
+          rm -rf "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  # .deb and .rpm are built from the musl binaries that already exist rather
+  # than recompiled. nfpm is one Go binary, so it costs the Rust build nothing.
+  linux-packages:
+    name: deb + rpm
+    needs: [guard, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*-linux-musl
+          path: dl
+          merge-multiple: true
+
+      - name: Install nfpm
+        run: |
+          curl -sSfL -o nfpm.deb \
+            https://github.com/goreleaser/nfpm/releases/download/v2.41.1/nfpm_2.41.1_amd64.deb
+          sudo dpkg -i nfpm.deb
+
+      - name: Build packages
+        run: |
+          v="${{ needs.guard.outputs.version }}"
+          mkdir -p dist stage
+          gzip -9 -kc man/from2to.1 > stage/from2to.1.gz
+          for arch in amd64:x86_64 arm64:aarch64; do
+            deb_arch="${arch%%:*}"; rust_arch="${arch##*:}"
+            tar xzf "dl/from2to-$v-$rust_arch-unknown-linux-musl.tar.gz" -C stage --strip-components=1 \
+              "from2to-$v-$rust_arch-unknown-linux-musl/from2to"
+            VERSION="$v" ARCH="$deb_arch" nfpm pkg -f nfpm.yaml -p deb -t dist/
+            VERSION="$v" ARCH="$deb_arch" nfpm pkg -f nfpm.yaml -p rpm -t dist/
+          done
+          cd dist && for f in *; do shasum -a 256 "$f" > "$f.sha256"; done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-packages
+          path: dist/*
+          if-no-files-found: error
+
+  # The PKGBUILD is generated and checked here, then attached to the release.
+  # Pushing it to aur.archlinux.org needs an SSH key registered with an AUR
+  # account, so that step stays manual until the key exists.
+  aur:
+    name: aur pkgbuild
+    needs: [guard, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*-linux-musl
+          path: dl
+          merge-multiple: true
+      - name: Render PKGBUILD
+        run: |
+          v="${{ needs.guard.outputs.version }}"
+          sum_x86=$(cut -d' ' -f1 < "dl/from2to-$v-x86_64-unknown-linux-musl.sha256")
+          sum_arm=$(cut -d' ' -f1 < "dl/from2to-$v-aarch64-unknown-linux-musl.sha256")
+          mkdir -p dist
+          sed -e "s/@VERSION@/$v/g" \
+              -e "s/@SHA256_X86_64@/$sum_x86/g" \
+              -e "s/@SHA256_AARCH64@/$sum_arm/g" \
+              packaging/aur/PKGBUILD.in > dist/PKGBUILD
+          if grep -qE '@[A-Z0-9_]+@' dist/PKGBUILD; then
+            echo "::error::PKGBUILD still has an unsubstituted placeholder"; exit 1
+          fi
+          cat dist/PKGBUILD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-aur
+          path: dist/PKGBUILD
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: [guard, build, linux-packages, aur]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Collect checksums and release notes
+        run: |
+          v="${{ needs.guard.outputs.version }}"
+          cd dist
+          cat *.sha256 | sort -k2 > SHA256SUMS && rm -f *.sha256
+          cd ..
+          # The section for this version only, without its own heading.
+          awk -v head="## [$v]" '
+            index($0, head) == 1 {f = 1; next}
+            f && index($0, "## [") == 1 {exit}
+            f {print}
+          ' CHANGELOG.md > NOTES.md
+          test -s NOTES.md || { echo "::error::no changelog body for $v"; exit 1; }
+          cat NOTES.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file NOTES.md \
+            dist/*
+
+  # Scoop reads the manifest straight out of this repo, so the release is not
+  # finished until the manifest points at it. Runs after `release` so the URL
+  # it writes is live the moment it lands, never a 404.
+  scoop:
+    name: scoop manifest
+    needs: [guard, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-x86_64-pc-windows-msvc
+          path: dl
+
+      - name: Point the manifest at this release
+        run: |
+          v="${{ needs.guard.outputs.version }}"
+          stem="from2to-$v-x86_64-pc-windows-msvc"
+          hash=$(cut -d' ' -f1 < "dl/$stem.sha256")
+          url="https://github.com/${{ github.repository }}/releases/download/v$v/$stem.zip"
+          jq --indent 4              --arg v "$v" --arg url "$url" --arg hash "$hash" --arg dir "$stem" '
+               .version = $v
+               | .architecture["64bit"].url = $url
+               | .architecture["64bit"].hash = $hash
+               | .architecture["64bit"].extract_dir = $dir
+             ' bucket/from2to.json > bucket/from2to.json.new
+          mv bucket/from2to.json.new bucket/from2to.json
+          cat bucket/from2to.json
+
+      - name: Commit to main
+        run: |
+          if git diff --quiet -- bucket/from2to.json; then
+            echo "manifest already current"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/from2to.json
+          git commit -m "scoop: from2to ${{ needs.guard.outputs.version }}"
+          # Rebase rather than force: main may have moved since the tag.
+          git pull --rebase origin main
+          git push origin HEAD:main

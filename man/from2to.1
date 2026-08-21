@@ -1,8 +1,8 @@
-.TH FROM2TO 1 "2026-08-13" "from2to 0.2.0" "User Commands"
+.TH FROM2TO 1 "2026-08-21" "from2to 0.3.0" "User Commands"
 .SH NAME
 from2to \- convert between number bases and byte encodings
 .SH SYNOPSIS
-.B <from>2<to>
+.B [le]<from>2[le]<to>
 [\fIOPTION\fR]... [\fIVALUE\fR]...
 .br
 .B f2t
@@ -14,7 +14,7 @@ from2to \- convert between number bases and byte encodings
 .B from2to
 \fISUBCOMMAND\fR [\fIOPTION\fR]...
 .SH DESCRIPTION
-One binary answers to about fifty names. The name it was invoked under picks the
+One binary answers to about sixty-five names. The name it was invoked under picks the
 conversion: \fBhex2bin\fR converts hex to binary, \fBdec2char\fR converts decimal
 code points to text, \fBchar2b64\fR converts text to base64.
 .PP
@@ -71,6 +71,13 @@ Drop the natural digit width and emit bare numbers.
 .BR \-g ", " \-\-group " " \fIN\fR
 Group output digits in runs of \fIN\fR.
 .TP
+.B \-\-word " " \fIBYTES\fR
+Bytes per word for a byte-order swap. A number is zero-extended on the left to
+a whole number of words; a run of bytes that is not a whole number of words is
+an error unless \fB\-\-keep\-going\fR is given. Implies \fB\-\-bytes\fR. This
+counts \fIbytes of the value\fR, where \fB\-\-width\fR counts \fIdigits of the
+output\fR \- the two are independent and may both be given.
+.TP
 .BR \-u ", " \-\-upper
 Uppercase the output digits.
 .TP
@@ -116,6 +123,61 @@ For \fBchar\fR input, whitespace is data rather than a separator \- except for
 one trailing newline arriving from a pipe, which is dropped so that
 .B echo hi | char2hex
 does the obvious thing.
+.SH BYTE ORDER
+Either half of a conversion name may carry an \fBle\fR or \fBbe\fR prefix:
+.B lehex2dec
+reads little-endian hex,
+.B hex2lebin
+writes little-endian binary, and
+.B lehex2ledec
+does both. \fBbe\fR is the default written down, so it changes nothing; it
+exists so a script can be explicit rather than rely on a default it cannot see.
+Only the \fBle\fR names are installed as commands, but every combination
+resolves through
+.BR f2t ,
+so \fBf2t leb642hex\fR works whether or not anything was installed.
+.PP
+A byte order only means something when the byte width is known, and that width
+comes from how the \fIsource\fR wrote the value:
+.TP
+.B char, b64, b32
+The bytes are the input, so the run is its own width. The swap covers the whole
+run, not one line at a time \- these conversions read to end of input.
+.TP
+.B hex, bin
+Byte-aligned, so the digits you wrote are a byte count. \fBlehex2dec 0d0c0b0a\fR
+is 168496141, and \fBlehex2dec ff\fR is 255, because a single byte has no byte
+order.
+.TP
+.B dec, oct, and every other base
+No byte width of their own \- 255 is one byte and 256 is two, so the word size
+would depend on the value. These are an error until \fB\-\-word\fR says how
+wide a word is.
+.PP
+Numbers swap per token: \fBlehex2hex 0102 0304\fR is two results, not a
+re-reading of four bytes. An odd hex digit count is an error rather than a
+guess, since there is no byte boundary to swap on; \fB\-\-keep\-going\fR
+downgrades that to a warning, as it does for any other bad token.
+.PP
+.B \-\-word
+groups the bytes into fixed-size words and reverses within each, leaving the
+order of the words alone \- the case of a hexdump taken off a 32-bit
+little-endian machine:
+.PP
+.RS 4
+.nf
+$ lehex2hex \-\-word 4 0d0c0b0a78563412
+0a0b0c0d12345678
+$ dec2lehex \-\-word 4 1234
+d2040000
+.fi
+.RE
+.PP
+Two notes worth having in advance. \fB\-W\fR strips the leading zeros of the
+\fIrendered\fR result, which after a swap are the zeros that used to be
+trailing, so \fBlehex2hex \-W 0100\fR is \fB1\fR rather than \fB0001\fR. And
+reversing UTF-8 bytes is not reversing characters: \fBchar2lehex \['e]\fR gives
+\fBa9c3\fR, which is no longer valid UTF-8.
 .SH IDENTIFYING A FORMAT
 .B whatbase
 takes text and works out what it plausibly is, for when the format is not known

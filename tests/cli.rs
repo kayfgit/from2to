@@ -66,8 +66,15 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 /// Put the binary in `dir` under a shim name, the way `install` would.
+///
+/// Idempotent: asking for the same name twice hands back what is already
+/// there. On Windows the second `copy` would otherwise fail with a sharing
+/// violation, because the first shim has just been run.
 fn make_shim(dir: &Path, name: &str) -> PathBuf {
     let dst = dir.join(format!("{name}{EXE_SUFFIX}"));
+    if dst.exists() {
+        return dst;
+    }
     if fs::hard_link(EXE, &dst).is_err() {
         fs::copy(EXE, &dst).unwrap();
     }
@@ -151,6 +158,95 @@ fn shim_help_names_the_conversion() {
     let shim = make_shim(&dir, "hex2bin");
     let out = run_exe(&shim, &["--help"], None);
     assert!(out.stdout.contains("Convert hex to bin"), "{}", out.stdout);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ----------------------------------------------------------- byte order
+
+#[test]
+fn endian_shims_swap_bytes() {
+    let dir = temp_dir("endian");
+    for (name, args, stdin, expected) in [
+        // 0x0d0c0b0a read back to front is 0x0a0b0c0d.
+        ("lehex2dec", vec!["0d0c0b0a"], None, "168496141"),
+        ("lehex2hex", vec!["0d0c0b0a"], None, "0a0b0c0d"),
+        ("hex2lebin", vec!["ff00"], None, "0000000011111111"),
+        ("lehex2char", vec!["6f6c6c6568"], None, "hello"),
+        ("char2lehex", vec!["hello"], None, "6f6c6c6568"),
+        // A single byte has no byte order.
+        ("lehex2dec", vec!["ff"], None, "255"),
+        // Per token, never across whitespace.
+        ("lehex2hex", vec!["0102", "0304"], None, "0201\n0403"),
+        // A word size pins the width and swaps each word on its own.
+        ("lehex2hex", vec!["--word", "4", "0d0c0b0a78563412"], None, "0a0b0c0d12345678"),
+        ("dec2lehex", vec!["--word", "4", "1234"], None, "d2040000"),
+        ("lehex2dec", vec![], Some("0d0c0b0a\nff00\n"), "168496141\n255"),
+    ] {
+        let shim = make_shim(&dir, name);
+        let out = run_exe(&shim, &args, stdin);
+        assert_eq!(out.out(), expected, "{name} {args:?} produced the wrong output");
+        assert_eq!(out.code, 0, "{name} exited {}: {}", out.code, out.stderr);
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The `f2t` spellings must agree with the shim, or people will learn one and
+/// be surprised by the other.
+#[test]
+fn every_spelling_of_a_byte_order_agrees() {
+    for args in [
+        vec!["lehex2bin", "0d0c0b0a"],
+        vec!["lehex", "bin", "0d0c0b0a"],
+        vec!["lehex", "2", "0d0c0b0a"],
+    ] {
+        let out = run(&args);
+        assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
+        assert_eq!(out.out(), "00001010000010110000110000001101", "{args:?}");
+    }
+    // `be` is the default written down, so it changes nothing.
+    assert_eq!(run(&["behex2dec", "ff"]).out(), run(&["hex2dec", "ff"]).out());
+}
+
+/// A swap over a run of bytes has to see the whole run. Reading it a line at a
+/// time would reverse each line on its own, which is a wrong answer.
+#[test]
+fn a_swapped_byte_run_is_read_whole() {
+    let dir = temp_dir("swapstream");
+    let shim = make_shim(&dir, "char2lehex");
+    let out = run_exe(&shim, &[], Some("hello\nworld\n"));
+    // The whole run reversed, newline included — not "olleh\ndlrow".
+    assert_eq!(out.out(), "646c726f770a6f6c6c6568", "{}", out.stderr);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_byte_order_without_a_width_is_refused() {
+    // Base 10 carries no byte width of its own.
+    let out = run(&["ledec2hex", "258"]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("--word"), "{}", out.stderr);
+
+    // An odd hex digit count has no byte boundary to swap on.
+    let out = run(&["lehex2dec", "fff"]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("whole number of bytes"), "{}", out.stderr);
+
+    // `-k` downgrades a token-level failure, as it does everywhere else.
+    let out = run(&["lehex2dec", "-k", "fff", "0d0c0b0a"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.out(), "168496141");
+}
+
+#[test]
+fn shim_help_names_the_byte_order() {
+    let dir = temp_dir("lehelp");
+    let shim = make_shim(&dir, "lehex2bin");
+    let out = run_exe(&shim, &["--help"], None);
+    assert!(
+        out.stdout.contains("Convert little-endian hex to bin"),
+        "{}",
+        out.stdout
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -314,7 +410,7 @@ fn list_names_every_command() {
     let out = run(&["list"]);
     assert_eq!(out.code, 0);
     let lines: Vec<&str> = out.stdout.lines().collect();
-    assert_eq!(lines.len(), 51);
+    assert_eq!(lines.len(), 65);
     assert!(lines.iter().any(|l| l.starts_with("hex2bin ")));
     assert!(lines.iter().any(|l| l.starts_with("whatbase ")));
     // The numeric shorthands are not commands any more, only `f2t` forms.
@@ -345,8 +441,8 @@ fn install_then_uninstall_round_trips() {
 
     let out = run_exe(&exe, &["install", "--dir", dir_s], None);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    // 50 shims + whatbase + f2t + the binary.
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 53);
+    // 64 shims + whatbase + f2t + the binary.
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 67);
 
     // A shim really works.
     let shim = dir.join(format!("hex2bin{EXE_SUFFIX}"));

@@ -10,6 +10,7 @@
 
 pub mod convert;
 pub mod detect;
+pub mod endian;
 pub mod format;
 pub mod install;
 pub mod names;
@@ -17,4 +18,5 @@ pub mod opts;
 
 pub use convert::{ConvError, Converter, Options};
 pub use detect::Candidate;
+pub use endian::{Endian, Endpoint};
 pub use format::Format;

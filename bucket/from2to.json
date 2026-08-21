@@ -1,0 +1,38 @@
+{
+    "version": "0.3.0",
+    "description": "Fast conversion at the terminal: hex2bin, dec2char, lehex2dec, and friends",
+    "homepage": "https://github.com/kayfgit/from2to",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/kayfgit/from2to/releases/download/v0.3.0/from2to-0.3.0-x86_64-pc-windows-msvc.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "extract_dir": "from2to-0.3.0-x86_64-pc-windows-msvc"
+        }
+    },
+    "bin": "from2to.exe",
+    "checkver": {
+        "github": "https://github.com/kayfgit/from2to"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/kayfgit/from2to/releases/download/v$version/from2to-$version-x86_64-pc-windows-msvc.zip",
+                "extract_dir": "from2to-$version-x86_64-pc-windows-msvc"
+            }
+        },
+        "hash": {
+            "url": "$baseurl/SHA256SUMS"
+        }
+    },
+    "notes": [
+        "Scoop installed one command, `from2to`.",
+        "The per-conversion commands (hex2bin, lehex2dec, ...) are a second step,",
+        "and they must go somewhere already on PATH. Scoop's shim directory is:",
+        "",
+        "    from2to install --dir \"$env:USERPROFILE\\scoop\\shims\"",
+        "",
+        "Scoop does not know about those files, so `scoop uninstall from2to` will",
+        "leave them behind. Run `from2to uninstall` first if you are removing it."
+    ]
+}

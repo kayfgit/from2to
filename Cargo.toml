@@ -1,6 +1,6 @@
 [package]
 name = "from2to"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Fast conversion at the terminal: hex2bin, dec2char, hex2b64, and friends"

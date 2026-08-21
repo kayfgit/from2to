@@ -5,6 +5,36 @@ this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-21
+
+Byte order, for the half of this tool's audience that reads memory dumps.
+
+### Added
+
+- **Little-endian conversions.** Either half of a command name may carry an
+  `le` or `be` prefix: `lehex2dec 0d0c0b0a` is `168496141`, `hex2lebin` writes
+  little-endian binary, `char2lehex` packs a string back to front. `be` is the
+  default written down and changes nothing. Fourteen `le` names are installed;
+  every other combination still resolves through `f2t`, e.g. `f2t leb642hex`.
+- **`--word BYTES`** — group the bytes into fixed-size words and reverse within
+  each, leaving the order of the words alone, for a hexdump taken off a 32-bit
+  little-endian machine. It also supplies the width that `dec` and `oct` lack.
+  Counts *bytes of the value*, where `--width` counts *digits of the output*.
+- A `BYTE ORDER` section in the man page and the README.
+
+### Changed
+
+- `from2to list` and `from2to install` now cover 65 and 66 names respectively,
+  up from 51 and 52.
+- A conversion whose byte width cannot be worked out is now an error naming the
+  fix, rather than a guess: `ledec2hex 258` asks for `--word`. 255 is one byte
+  and 256 is two, so inferring a width from the value would make the word size
+  depend on the value.
+- A little-endian conversion whose source is `char`, `b64` or `b32` reads to end
+  of input instead of streaming. A swap over a run of bytes has no token
+  boundaries to work with, so processing it a line at a time would reverse each
+  line on its own. Nothing that streamed before byte order existed has stopped.
+
 ## [0.2.0] — 2026-08-13
 
 First release published to crates.io.
@@ -58,6 +88,7 @@ First release published to crates.io.
 Initial release: about sixty `<from>2<to>` commands over bases 2–36, `char`,
 base64 and base32, sharing one binary through links.
 
-[Unreleased]: https://github.com/kayfgit/from2to/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kayfgit/from2to/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kayfgit/from2to/releases/tag/v0.3.0
 [0.2.0]: https://github.com/kayfgit/from2to/releases/tag/v0.2.0
 [0.1.0]: https://github.com/kayfgit/from2to/releases/tag/v0.1.0

@@ -7,6 +7,7 @@
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::convert::Options;
+use crate::endian::Endian;
 
 const AFTER_HELP: &str = "\
 EXAMPLES:
@@ -18,6 +19,9 @@ EXAMPLES:
     f2t 36 10 zz                  1295       (any base 2-36)
     f2t 1628 ff                   377        (numeric shorthand: 16 to 8)
     whatbase bDNhcm5fdGgzX3IwcDM1 b64        (when you do not know the base)
+
+    lehex2dec 0d0c0b0a            168496141  (a word out of a memory dump)
+    dec2lehex --word 4 1234       d2040000   (pack one back)
 
     nc example.com 4000 | dec2char
         decode a stream of decimal code points as it arrives
@@ -50,6 +54,13 @@ fn common_args(cmd: Command) -> Command {
             .value_name("N")
             .value_parser(clap::value_parser!(usize))
             .help("Group output digits in runs of N"),
+    )
+    .arg(
+        Arg::new("word")
+            .long("word")
+            .value_name("BYTES")
+            .value_parser(clap::value_parser!(usize))
+            .help("Bytes per word, for the le/be command names"),
     )
     .arg(
         Arg::new("upper")
@@ -273,10 +284,15 @@ pub fn self_command(invoked_as: &str) -> Command {
 
 /// Pull the conversion options out of parsed arguments.
 pub fn options_from(m: &ArgMatches) -> Options {
+    let word = m.get_one::<usize>("word").copied();
     let bytes_mode = if m.get_flag("bytes") {
         Some(true)
     } else if m.get_flag("codepoint") {
         Some(false)
+    } else if word.is_some() {
+        // A word size is a statement about bytes, so saying it is enough —
+        // otherwise `char2lehex --word 4` would refuse itself for no reason.
+        Some(true)
     } else {
         None
     };
@@ -296,6 +312,11 @@ pub fn options_from(m: &ArgMatches) -> Options {
         bytes_mode,
         strict: m.get_flag("strict"),
         keep_going: m.get_flag("keep-going"),
+        // Byte order comes from the command name, not from a flag; `main`
+        // fills these in once it has resolved the name.
+        from_endian: Endian::default(),
+        to_endian: Endian::default(),
+        word,
     }
 }
 

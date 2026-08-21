@@ -1,0 +1,32 @@
+# Template. The release workflow substitutes @VERSION@ and the two checksums
+# from SHA256SUMS and attaches the result to the GitHub release.
+#
+# `from2to-bin` rather than a from-source `from2to`: it installs in a second and
+# needs no Rust toolchain, which is what the Arch and BlackArch audience wants.
+# Keep this file as the source of truth; do not hand-edit the generated one.
+# Maintainer: kayfgit <212810682+kayfgit@users.noreply.github.com>
+pkgname=from2to-bin
+_pkgname=from2to
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Fast conversion at the terminal: hex2bin, dec2char, lehex2dec, and friends"
+arch=('x86_64' 'aarch64')
+url="https://github.com/kayfgit/from2to"
+license=('MIT')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+source_x86_64=("$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("$url/releases/download/v$pkgver/$_pkgname-$pkgver-aarch64-unknown-linux-musl.tar.gz")
+sha256sums_x86_64=('@SHA256_X86_64@')
+sha256sums_aarch64=('@SHA256_AARCH64@')
+
+package() {
+  local _dir="$_pkgname-$pkgver-$CARCH-unknown-linux-musl"
+  install -Dm755 "$_dir/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+  install -Dm644 "$_dir/man/$_pkgname.1" "$pkgdir/usr/share/man/man1/$_pkgname.1"
+  install -Dm644 "$_dir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$_dir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+  # The per-conversion commands are not shipped: `from2to install` creates them
+  # where the user asks for them. See the note in nfpm.yaml.
+}

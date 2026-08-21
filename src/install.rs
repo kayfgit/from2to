@@ -59,16 +59,58 @@ pub struct Target {
     exe_bytes: OnceLock<Option<Vec<u8>>>,
 }
 
+/// Can we actually create files here?
+///
+/// Probed by trying, rather than by reading permission bits: the bits lie on
+/// network filesystems, and on Windows they barely mean anything at all.
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(".from2to-write-probe");
+    match fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Where the shims go when the binary's own directory is not ours to write to.
+///
+/// This is the case for every system package: from `/usr/bin/from2to`, a normal
+/// user running `from2to install` would otherwise just get a permission error.
+/// `cargo install` is unaffected, because `~/.cargo/bin` is already writable.
+fn user_bin_dir(fallback: PathBuf) -> PathBuf {
+    let candidate = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(|p| Path::new(&p).join("Programs").join("from2to"))
+    } else {
+        std::env::var_os("XDG_BIN_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| Path::new(&h).join(".local").join("bin"))
+            })
+    };
+    match candidate {
+        // Created eagerly: `~/.local/bin` often does not exist yet, and a
+        // directory that cannot be made is no use as a fallback.
+        Some(d) if fs::create_dir_all(&d).is_ok() && writable(&d) => d,
+        // Nothing better to offer; let the real create fail with a real error.
+        _ => fallback,
+    }
+}
+
 impl Target {
     pub fn resolve(dir: Option<&str>) -> io::Result<Target> {
         let exe = std::env::current_exe()?;
         let exe = fs::canonicalize(&exe).unwrap_or(exe);
         let dir = match dir {
             Some(d) => PathBuf::from(d),
-            None => exe
-                .parent()
-                .ok_or_else(|| io::Error::other("cannot determine the binary's directory"))?
-                .to_path_buf(),
+            None => {
+                let beside = exe
+                    .parent()
+                    .ok_or_else(|| io::Error::other("cannot determine the binary's directory"))?
+                    .to_path_buf();
+                if writable(&beside) { beside } else { user_bin_dir(beside) }
+            }
         };
         Ok(Target {
             exe,
@@ -257,7 +299,7 @@ pub struct Report {
     pub methods: Vec<Method>,
 }
 
-/// Probe before creating fifty-odd files, so a permission problem surfaces as
+/// Probe before creating sixty-odd files, so a permission problem surfaces as
 /// one clear message instead of halfway through the run.
 fn check_writable(dir: &Path) -> io::Result<()> {
     let probe = dir.join(format!(".from2to-write-probe-{}", std::process::id()));
@@ -380,6 +422,20 @@ pub fn uninstall(dir: Option<&str>, dry_run: bool) -> io::Result<Report> {
     Ok(report)
 }
 
+/// Is this directory on `PATH`?
+///
+/// Worth saying out loud: with the fallback in `Target::resolve`, the commands
+/// can land somewhere the shell will not find them, and silently installing
+/// sixty files that cannot be run is a poor outcome.
+fn on_path(dir: &Path) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return true; // Nothing to check against; do not cry wolf.
+    };
+    let want = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    std::env::split_paths(&path)
+        .any(|p| fs::canonicalize(&p).unwrap_or(p) == want)
+}
+
 pub fn print_install_report(target_dir: &Path, r: &Report, dry_run: bool) {
     let verb = if dry_run { "would install" } else { "installed" };
     let how = if r.methods.is_empty() {
@@ -397,6 +453,9 @@ pub fn print_install_report(target_dir: &Path, r: &Report, dry_run: bool) {
         how,
         target_dir.display()
     );
+    if !on_path(target_dir) {
+        eprintln!("  note: {} is not on your PATH", target_dir.display());
+    }
     if r.already > 0 {
         println!("  {} already present", r.already);
     }
@@ -443,9 +502,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn writability_is_probed_by_trying() {
+        let dir = std::env::temp_dir().join(format!("f2t-writable-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(writable(&dir));
+        // A directory that is not there cannot be written to.
+        assert!(!writable(&dir.join("no-such-subdir")));
+        // The probe must not leave anything behind.
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The fallback has to produce somewhere real, or a system package leaves
+    /// the user with a permission error and no suggestion.
+    #[test]
+    fn the_user_bin_fallback_is_writable() {
+        let sentinel = PathBuf::from("definitely-not-a-real-directory");
+        let dir = user_bin_dir(sentinel.clone());
+        if dir != sentinel {
+            assert!(writable(&dir), "{} is not writable", dir.display());
+        }
+    }
+
+    #[test]
+    fn on_path_recognizes_a_directory_from_path() {
+        // Whatever PATH holds, its own first entry must read as being on it.
+        if let Some(p) = std::env::var_os("PATH")
+            .and_then(|v| std::env::split_paths(&v).find(|d| d.is_dir()))
+        {
+            assert!(on_path(&p), "{} should read as on PATH", p.display());
+        }
+        let off = std::env::temp_dir().join("f2t-definitely-not-on-path");
+        assert!(!on_path(&off));
+    }
+
+    #[test]
     fn all_names_includes_shims_and_short_self_name() {
         let names = all_names();
-        assert_eq!(names.len(), 52);
+        assert_eq!(names.len(), 66);
         assert!(names.contains(&"hex2bin".to_string()));
         assert!(names.contains(&"f2t".to_string()));
         assert!(names.contains(&"whatbase".to_string()));

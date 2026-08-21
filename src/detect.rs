@@ -604,7 +604,10 @@ mod tests {
         let c = &detect(input)[0];
         assert_eq!(c.command().as_deref(), Some("b642char"));
         let (from, to) = crate::names::resolve(&c.command().unwrap()).unwrap();
-        let out = Converter::new(from, to, Options::default()).convert(input).unwrap();
+        // The detector never suggests a byte order, so both ends are big-endian.
+        let out = Converter::new(from.format, to.format, Options::default())
+            .convert(input)
+            .unwrap();
         assert_eq!(out, "l3arn_th3_r0p35");
     }
 

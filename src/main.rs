@@ -1,12 +1,13 @@
 //! The CLI shell.
 //!
-//! One binary answers to ~60 names. `argv[0]` picks the conversion; under its
+//! One binary answers to ~66 names. `argv[0]` picks the conversion; under its
 //! own name (`f2t`) the formats come from the first two arguments instead.
 
 use std::io::{self, BufRead, BufWriter, Read, Write};
 use std::process::ExitCode;
 
 use from2to::convert::{ConvError, Converter, Options};
+use from2to::endian::Endpoint;
 use from2to::format::Format;
 use from2to::{detect, install, names, opts};
 
@@ -95,10 +96,12 @@ fn run() -> Fallible<ExitCode> {
     let (from, to, leading) = match names::resolve(from_arg) {
         Some((f, t)) => (f, t, to_arg.cloned().into_iter().collect()),
         None => {
-            let f = Format::parse(from_arg)
+            // `Endpoint::parse`, not `Format::parse`, so `f2t lehex bin ff`
+            // works alongside `f2t lehex2bin ff`.
+            let f = Endpoint::parse(from_arg)
                 .ok_or_else(|| format!("unknown format '{from_arg}'"))?;
             let t_arg = to_arg.ok_or("missing target format (try: f2t hex bin ff)")?;
-            let t = Format::parse(t_arg).ok_or_else(|| format!("unknown format '{t_arg}'"))?;
+            let t = Endpoint::parse(t_arg).ok_or_else(|| format!("unknown format '{t_arg}'"))?;
             (f, t, Vec::new())
         }
     };
@@ -154,14 +157,23 @@ fn collect_values(m: &clap::ArgMatches, mut leading: Vec<String>) -> Vec<String>
 }
 
 fn convert(
-    from: Format,
-    to: Format,
+    from: Endpoint,
+    to: Endpoint,
     values: Vec<String>,
     m: &clap::ArgMatches,
 ) -> Fallible<ExitCode> {
     let quiet = m.get_flag("quiet");
     let no_newline = m.get_flag("no-newline");
-    let conv = Converter::new(from, to, opts::options_from(m));
+
+    // The command name carried the byte order this far; the converter wants it
+    // in `Options`, which is what keeps `Converter::new` down to two formats.
+    let mut options = opts::options_from(m);
+    options.from_endian = from.endian;
+    options.to_endian = to.endian;
+
+    let conv = Converter::new(from.format, to.format, options);
+    // Fail on a configuration that cannot mean anything before reading stdin.
+    conv.check()?;
 
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());

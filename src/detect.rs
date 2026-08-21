@@ -453,7 +453,7 @@ pub fn detect(input: &str) -> Vec<Candidate> {
     merge_url_twin(&mut out, &body);
     out.retain(|c| c.score >= FLOOR);
     // Sort is stable, so an exact tie falls back to CANDIDATES order.
-    out.sort_by(|a, b| b.score.cmp(&a.score));
+    out.sort_by_key(|c| std::cmp::Reverse(c.score));
     out
 }
 

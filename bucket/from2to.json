@@ -1,13 +1,13 @@
 {
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Fast conversion at the terminal: hex2bin, dec2char, lehex2dec, and friends",
     "homepage": "https://github.com/kayfgit/from2to",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/kayfgit/from2to/releases/download/v0.3.0/from2to-0.3.0-x86_64-pc-windows-msvc.zip",
-            "hash": "97847f58cb014dc21b34352f90968322f1d42274e692e4cb0a12d8c29173bb67",
-            "extract_dir": "from2to-0.3.0-x86_64-pc-windows-msvc"
+            "url": "https://github.com/kayfgit/from2to/releases/download/v0.4.0/from2to-0.4.0-x86_64-pc-windows-msvc.zip",
+            "hash": "0a4315893712f20c6e0dd8d788a747423db90ebefa6a9ac4a4ea30608bc1d3ec",
+            "extract_dir": "from2to-0.4.0-x86_64-pc-windows-msvc"
         }
     },
     "bin": "from2to.exe",

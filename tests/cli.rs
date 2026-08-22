@@ -264,20 +264,71 @@ fn shim_help_names_the_byte_order() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Escaped hex through the shim names, including the pwntools-shaped one.
+#[test]
+fn esc_shims_round_trip_a_payload() {
+    let dir = temp_dir("esc");
+    for (name, args, expected) in [
+        ("char2esc", vec!["hello"], "\\x68\\x65\\x6c\\x6c\\x6f"),
+        ("esc2char", vec!["\\x66\\x6c\\x61\\x67"], "flag"),
+        ("esc2hex", vec!["GET /\\r\\n"], "474554202f0d0a"),
+        // p32(1234): agrees with struct.pack('<I', 1234) byte for byte.
+        ("dec2leesc", vec!["--word", "4", "1234"], "\\xd2\\x04\\x00\\x00"),
+    ] {
+        let shim = make_shim(&dir, name);
+        let out = run_exe(&shim, &args, None);
+        assert_eq!(out.code, 0, "{name}: {}", out.stderr);
+        assert_eq!(out.out(), expected, "{name} {args:?}");
+    }
+
+    // And whatbase names it without being told.
+    assert_eq!(run(&["detect", "\\x68\\x65\\x6c\\x6c\\x6f"]).out(), "esc     hello");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // ----------------------------------------------------------- detection
 
 #[test]
-fn detect_identifies_a_base64_challenge_string() {
+fn detect_answers_before_it_explains() {
     let out = run(&["detect", "bDNhcm5fdGgzX3IwcDM1"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(out.stdout.starts_with("b64"), "{}", out.stdout);
-    assert!(out.stdout.contains("l3arn_th3_r0p35"), "{}", out.stdout);
-    // And it hands back a command that finishes the job.
-    assert!(
-        out.stdout.contains("b642char bDNhcm5fdGgzX3IwcDM1"),
+    // The whole default report: the format, what it says, and the caveat that
+    // nothing in the string could separate b64 from b64url.
+    assert_eq!(
+        out.stdout,
+        "b64     l3arn_th3_r0p35
+        also reads as b64url (identical here)
+",
         "{}",
         out.stdout
     );
+    // The reasoning is still there, just behind --why.
+    let why = run(&["detect", "--why", "bDNhcm5fdGgzX3IwcDM1"]);
+    assert!(why.stdout.contains("all 20 characters"), "{}", why.stdout);
+    assert!(why.stdout.contains("b642char bDNhcm5fdGgzX3IwcDM1"), "{}", why.stdout);
+}
+
+/// The one case terse output must not stay quiet about: two readings that give
+/// different answers and are too close to call.
+#[test]
+fn detect_names_a_rival_that_is_genuinely_close() {
+    let out = run(&["detect", "123456"]);
+    assert_eq!(out.stdout, "dec     123456
+        also reads as oct (42798)
+");
+
+    // ...and stays quiet when the winner is not in doubt.
+    assert_eq!(run(&["detect", "68656c6c6f"]).stdout, "hex     hello
+");
+}
+
+/// A positional base whose bytes are not text still owes you the number.
+#[test]
+fn detect_shows_the_value_when_it_is_not_text() {
+    assert_eq!(run(&["detect", "ff"]).out(), "hex     255");
+    assert_eq!(run(&["detect", "deadbeef"]).out(), "hex     3735928559");
+    assert_eq!(run(&["detect", "hello world"]).out(), "char    (already text)");
 }
 
 #[test]
@@ -424,7 +475,7 @@ fn list_names_every_command() {
     let out = run(&["list"]);
     assert_eq!(out.code, 0);
     let lines: Vec<&str> = out.stdout.lines().collect();
-    assert_eq!(lines.len(), 65);
+    assert_eq!(lines.len(), 79);
     assert!(lines.iter().any(|l| l.starts_with("hex2bin ")));
     assert!(lines.iter().any(|l| l.starts_with("whatbase ")));
     // The numeric shorthands are not commands any more, only `f2t` forms.
@@ -455,8 +506,8 @@ fn install_then_uninstall_round_trips() {
 
     let out = run_exe(&exe, &["install", "--dir", dir_s], None);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    // 64 shims + whatbase + f2t + the binary.
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 67);
+    // 78 shims + whatbase + f2t + the binary.
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 81);
 
     // A shim really works.
     let shim = dir.join(format!("hex2bin{EXE_SUFFIX}"));

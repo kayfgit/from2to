@@ -1,4 +1,4 @@
-.TH FROM2TO 1 "2026-08-21" "from2to 0.3.0" "User Commands"
+.TH FROM2TO 1 "2026-08-21" "from2to 0.4.0" "User Commands"
 .SH NAME
 from2to \- convert between number bases and byte encodings
 .SH SYNOPSIS
@@ -46,6 +46,15 @@ Text: Unicode scalars, or raw bytes.
 .TP
 .B b64 \fR(\fBbase64\fR), \fBb64url\fR, \fBb32 \fR(\fBbase32\fR), \fBb32hex\fR
 The RFC 4648 encodings.
+.TP
+.B esc \fR(\fBescape\fR, \fBfhex\fR, \fBxhex\fR)
+Escaped hex: the \fB\ex48\ex65\fR notation payloads are written in. Every byte is
+escaped on the way out, so the output round-trips and never leaves a literal
+backslash ambiguous. On the way in, the short escapes \fB\en \er \et \e0 \e\e\fR are
+understood and literal text passes through, because
+.B GET /\er\en
+is what you actually copy out of an exploit script. \fB\-\-strict\fR accepts
+nothing but \fB\exNN\fR.
 .TP
 .I N
 Any bare radix from 2 to 36, for use with \fBf2t\fR.
@@ -185,6 +194,11 @@ in advance. It is also available as
 .BR "from2to detect" .
 .TP
 .BR \-a ", " \-\-all
+.TP
+.BR \-w ", " \-\-why
+Show how it decided: the confidence scores, the evidence for the winning
+reading, and the command that finishes the job. Without it the report is just
+the format and what the input says.
 Show every candidate, not just the likely ones.
 .TP
 .BR \-d ", " \-\-decode

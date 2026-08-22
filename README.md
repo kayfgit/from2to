@@ -1,5 +1,6 @@
 # from2to
 
+[![CI](https://github.com/kayfgit/from2to/actions/workflows/ci.yml/badge.svg)](https://github.com/kayfgit/from2to/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/from2to.svg)](https://crates.io/crates/from2to)
 [![docs.rs](https://img.shields.io/docsrs/from2to)](https://docs.rs/from2to)
 [![MIT](https://img.shields.io/crates/l/from2to.svg)](LICENSE)
@@ -18,7 +19,7 @@ flag{d3c0d3d_1n_0n3_p1p3}
 ```
 
 No Python REPL, no `awk`, no looking up `printf` format strings. One binary
-installs ~65 short commands — `hex2bin`, `dec2char`, `char2hex`, `hex2b64` —
+installs ~79 short commands — `hex2bin`, `dec2char`, `char2hex`, `hex2b64` —
 each of which takes its input from the command line or from stdin.
 
 And when you do not know what you are looking at yet, `whatbase` works it out:
@@ -78,7 +79,7 @@ The second command creates the per-conversion commands and prints where they
 went:
 
 ```console
-installed 66 commands via symlink in /home/you/.cargo/bin
+installed 80 commands via symlink in /home/you/.cargo/bin
 ```
 
 Open a new shell so they are picked up, then check it worked:
@@ -139,6 +140,7 @@ that one needs `--force` before install will touch it.
 | Number bases | `bin` `oct` `dec` `hex`, in every ordered pair: `hex2bin`, `dec2hex`, `bin2oct`, … |
 | Text | `char` (alias `ascii`): `dec2char`, `hex2char`, `char2hex`, `dec2ascii`, … |
 | Encodings | `b64` `b32`: `hex2b64`, `b642char`, `char2b32`, `b642hex`, … |
+| Escaped hex | `esc` (alias `fhex`): `char2esc`, `esc2char`, `hex2esc`, … |
 | Generic | `f2t <from> <to>` for any base 2–36 |
 | Byte order | `le`/`be` on either half: `lehex2dec`, `hex2lebin`, `char2lehex`, … |
 | Detection | `whatbase <text>` — when you do not know the format yet |
@@ -186,6 +188,38 @@ is the other direction — paste the blob and be told what it plausibly is:
 
 ```console
 $ whatbase bDNhcm5fdGgzX3IwcDM1
+b64     l3arn_th3_r0p35
+        also reads as b64url (identical here)
+```
+
+The answer, and what it says. A positional base that does not spell anything
+gives you the number instead, which is almost always what you wanted next:
+
+```console
+$ whatbase deadbeef
+hex     3735928559
+```
+
+**A second line only appears when it is earned** — so silence is itself a
+claim of confidence. Two things earn it: a twin that decodes identically, as
+above, or a rival close enough that choosing between them is a real decision:
+
+```console
+$ whatbase 123456
+dec     123456
+        also reads as oct (42798)
+```
+
+That is the case worth being loud about. `123456` is a perfectly good octal
+number meaning something completely different, and the scores are 53 to 49 —
+too close to quietly pick one. Meanwhile `deadbeef` scores hex 59 to char 35
+and is not in any doubt, so nothing is added.
+
+`--why` shows how it decided — the scores, the evidence, and the command that
+finishes the job:
+
+```console
+$ whatbase --why bDNhcm5fdGgzX3IwcDM1
 b64       96%   l3arn_th3_r0p35
          all 20 characters are in the base64 alphabet
          length 20 is a multiple of 4
@@ -202,6 +236,7 @@ shims.
 
 | Flag | Effect |
 |---|---|
+| `-w`, `--why` | show the scores, the evidence and the command to run |
 | `-d`, `--decode` | skip the report, print what the best guess decodes to |
 | `-q`, `--quiet` | print just the format name, for scripts |
 | `-a`, `--all` | every candidate, including the implausible ones |
@@ -237,11 +272,13 @@ to carry something. For a positional base it is not: `1234567890` is a perfectly
 good decimal number and owes nobody a printable decoding.
 
 The score is a confidence, and only means anything next to the other
-candidates. Short inputs are genuinely ambiguous and it will say so rather than
-pick a winner it cannot justify:
+candidates — which is exactly why it is not in the default output. `59%` on its
+own tells you nothing; `59` against `25` tells you the answer is not in doubt.
+`--why` shows the comparison, and `-a` adds every reading including the
+implausible ones:
 
 ```console
-$ whatbase -a ff
+$ whatbase --why -a ff
 hex       59%
          1 token of nothing but base-16 digits
          2 digits — a whole number of bytes
@@ -253,6 +290,17 @@ char      25%
 b32       23%
 b64       20%
 b32hex    20%
+```
+
+`-a` on its own gives the same list, terse — one line per reading:
+
+```console
+$ whatbase -a 123456
+dec     123456
+oct     42798
+hex     1193046
+char    (already text)
+b64
 ```
 
 Two deliberate limits. `whatbase` never guesses at ciphers — a rot13 string is
@@ -393,6 +441,55 @@ rendered result, which after a swap are the zeros that used to be trailing, so
 `lehex2hex -W 0100` is `1` rather than `0001`. And reversing UTF-8 bytes is not
 reversing characters — `char2lehex é` gives `a9c3`, which is no longer valid
 UTF-8.
+
+## Escaped hex: `esc`
+
+The `\x48\x65` notation, in both directions. This is the format payloads are
+written in, and the one you paste back out of them:
+
+```console
+$ char2esc hello
+\x68\x65\x6c\x6c\x6f
+
+$ esc2char '\x66\x6c\x61\x67'
+flag
+```
+
+Every byte is escaped on the way out, never "printable as-is, the rest
+escaped". Uniform output round-trips and never leaves you wondering whether a
+backslash was data.
+
+Reading is deliberately more forgiving than writing, because what you copy out
+of an exploit script is **mixed** — literal text with escapes threaded through
+it, and every byte of it meant:
+
+```console
+$ esc2hex 'GET /\r\n'
+474554202f0d0a
+```
+
+The short escapes `\n \r \t \0 \\` are understood on the way in. `--strict`
+accepts nothing but `\xNN`.
+
+It composes with byte order, which is where it earns its place — this is
+`p32(1234)` from pwntools, and it agrees with `struct.pack('<I', 1234)` byte
+for byte:
+
+```console
+$ dec2leesc --word 4 1234
+\xd2\x04\x00\x00
+```
+
+`whatbase` recognizes it on sight, since nothing else looks like it:
+
+```console
+$ whatbase '\x68\x65\x6c\x6c\x6f'
+esc     hello
+```
+
+A backslash alone is not enough, though. `\t` and `\n` are a tab and a newline
+in most languages, which would make every Windows path (`C:\temp\new`) read as
+escaped bytes — so a real `\xNN` is required before `esc` is even a candidate.
 
 ## char: bytes or code points?
 

@@ -23,7 +23,9 @@ use crate::convert::{Converter, Options};
 use crate::format::Format;
 
 /// The formats detection considers, in the order ties break.
-const CANDIDATES: [Format; 9] = [
+const CANDIDATES: [Format; 10] = [
+    // First: nothing else looks like `\\x48`, so a match here is decisive.
+    Format::Esc,
     Format::HEX,
     Format::B64,
     Format::BIN,
@@ -55,6 +57,14 @@ pub struct Candidate {
     pub decoded: Option<String>,
     /// A caveat about another format that would read the same way.
     pub note: Option<String>,
+    /// Another format that decodes this input identically, so nothing in the
+    /// string itself could tell them apart.
+    pub twin: Option<Format>,
+    /// The plain value, for a positional base short enough to be worth showing.
+    ///
+    /// `ff` is hex, and the useful thing to say next is `255` — not that the
+    /// byte 0xff fails to spell anything.
+    pub value: Option<String>,
 }
 
 impl Candidate {
@@ -76,6 +86,9 @@ fn alphabet_size(f: Format) -> u32 {
         Format::B32 | Format::B32Hex => 32,
         Format::B64 | Format::B64Url => 64,
         Format::Char => 95,
+        // Not really an alphabet: the syntax is what identifies it, so give it
+        // hex's width and let structure do the work.
+        Format::Esc => 16,
     }
 }
 
@@ -84,6 +97,8 @@ fn alphabet_size(f: Format) -> u32 {
 fn familiarity(f: Format, body: &str) -> f64 {
     match f {
         Format::HEX => 1.0,
+        // Unmistakable when present — nothing else looks like `H`.
+        Format::Esc => 1.0,
         Format::B64 => 0.95,
         Format::BIN => 0.9,
         Format::DEC => 0.9,
@@ -158,10 +173,22 @@ fn token_admits(tok: &str, base: u32) -> bool {
     !cleaned.is_empty() && cleaned.chars().all(|c| c.is_digit(base))
 }
 
+/// Escaped hex has to actually be escaped hex: at least one `\\xNN`, and
+/// every backslash in the string accounted for. That second half is what
+/// stops a stray backslash in ordinary prose from claiming the format.
+fn esc_count(body: &str) -> usize {
+    body.matches("\\x").count()
+}
+
+fn esc_admits(body: &str) -> bool {
+    body.contains("\\x") && crate::convert::decode_esc_ok(body)
+}
+
 fn admits(f: Format, tokens: &[&str], body: &str) -> bool {
     match f {
         Format::Char => true,
         Format::Positional(r) => !tokens.is_empty() && tokens.iter().all(|t| token_admits(t, r)),
+        Format::Esc => esc_admits(body),
         enc => encoding_admits(enc, body),
     }
 }
@@ -241,6 +268,27 @@ fn prose_likeness(s: &str) -> f64 {
 ///
 /// Returns the plausibility of the payload and, when it is worth showing, the
 /// decoded text itself.
+/// A positional input rendered in base 10, when that is cheap and useful.
+///
+/// Base 10 restating itself looks redundant, but it is the half of the
+/// comparison that makes the other half mean anything: `dec 123456` next to
+/// `oct 42798` is the whole reason to warn about the ambiguity at all.
+///
+/// Capped at one short token on purpose. Converting a megabyte of hex to
+/// decimal is a bignum operation quadratic in the input, and nobody asked for
+/// the decimal expansion of a memory dump.
+fn base_ten(f: Format, input: &str) -> Option<String> {
+    const MAX_DIGITS: usize = 32;
+    if !f.is_positional() {
+        return None;
+    }
+    let tok = input.trim();
+    if tok.is_empty() || tok.len() > MAX_DIGITS || tok.split_whitespace().count() != 1 {
+        return None;
+    }
+    Converter::new(f, Format::DEC, Options::default()).convert(tok).ok()
+}
+
 fn payload(f: Format, input: &str) -> (f64, Option<String>) {
     if f == Format::Char {
         return (prose_likeness(input), None);
@@ -296,6 +344,17 @@ fn structure(f: Format, tokens: &[&str], body: &str) -> (f64, Vec<String>) {
                 reasons.push("spaces between words, not one run of symbols".into());
             }
             (1.0, reasons)
+        }
+        Format::Esc => {
+            let n = esc_count(body);
+            // A run that is nothing but escapes is unambiguous; escapes mixed
+            // into literal text are still esc, just less emphatically.
+            let covered = (n * 4) as f64 / body.len().max(1) as f64;
+            if covered > 0.95 {
+                (1.0, vec![format!("{n} escaped bytes and nothing else")])
+            } else {
+                (0.75, vec![format!("{n} escaped bytes mixed with literal text")])
+            }
         }
         Format::Positional(r) => positional_structure(r, tokens),
         enc => {
@@ -444,6 +503,8 @@ pub fn detect(input: &str) -> Vec<Candidate> {
         out.push(Candidate {
             format: f,
             score,
+            value: base_ten(f, text),
+            twin: None,
             reasons,
             decoded,
             note: None,
@@ -460,6 +521,7 @@ pub fn detect(input: &str) -> Vec<Candidate> {
 fn alphabet_reason(f: Format, tokens: &[&str], body: &str) -> String {
     match f {
         Format::Char => "printable text as it stands".into(),
+        Format::Esc => format!("written as {} \\xNN escapes", esc_count(body)),
         Format::Positional(r) => format!(
             "{} token{} of nothing but base-{r} digits",
             tokens.len(),
@@ -498,6 +560,7 @@ fn merge_url_twin(cands: &mut Vec<Candidate>, body: &str) {
     }
     cands.retain(|c| c.format != Format::B64Url);
     if let Some(c) = cands.iter_mut().find(|c| c.format == Format::B64) {
+        c.twin = Some(Format::B64Url);
         c.note = Some("b64url reads the same here — no + / - _ to tell them apart".into());
     }
 }
@@ -508,6 +571,72 @@ fn merge_url_twin(cands: &mut Vec<Candidate>, body: &str) {
 ///
 /// `all` widens it from "the answer, plus what else it could be" to every
 /// candidate that scored at all.
+/// A rival is worth naming when it scores within this much of the winner.
+///
+/// Tuned against real inputs rather than picked: `123456` reads as decimal
+/// 123456 or octal 42798 (a 0.92 ratio) and the difference matters, while
+/// `deadbeef` scores hex 59 to char 35 (0.59) and is not in any doubt. The
+/// line sits between them, so silence here is itself a claim of confidence.
+const RIVAL_RATIO: f64 = 0.75;
+
+/// The default report: the answer, and a caveat only when one is earned.
+///
+/// The verbose form explains itself before it answers, which is backwards for
+/// the common case — you already suspect what the blob is and want it read.
+pub fn report_terse(cands: &[Candidate], all: bool) -> String {
+    if cands.is_empty() {
+        return "nothing to identify\n".to_string();
+    }
+    let best = &cands[0];
+
+    if all {
+        let mut s = String::new();
+        for c in cands {
+            s.push_str(format!("{:<7} {}", c.format.to_string(), shown(c)).trim_end());
+            s.push('\n');
+        }
+        return s;
+    }
+
+    let mut s = format!("{:<7} {}", best.format.to_string(), shown(best));
+    s.truncate(s.trim_end().len());
+    s.push('\n');
+
+    // Two ways to earn the second line: a twin that decodes identically, or a
+    // rival close enough that picking between them is a real decision.
+    if let Some(t) = best.twin {
+        s.push_str(&format!("        also reads as {t} (identical here)\n"));
+    } else if let Some(r) = cands.get(1).filter(|r| {
+        best.score > 0 && f64::from(r.score) / f64::from(best.score) >= RIVAL_RATIO
+    }) {
+        let what = shown(r);
+        s.push_str(&format!("        also reads as {}", r.format));
+        if !what.is_empty() {
+            s.push_str(&format!(" ({what})"));
+        }
+        s.push('\n');
+    }
+    s
+}
+
+/// What goes in the second column: the text it spells, else the number it is.
+///
+/// A single decoded character loses to the number, because one printable byte
+/// is usually a coincidence — `01010101` is far more useful as `85` than as
+/// `U`. Two characters is where a decoding starts to look intended.
+fn shown(c: &Candidate) -> String {
+    let spelled = c
+        .decoded
+        .as_ref()
+        .filter(|d| d.chars().count() > 1 || c.value.is_none());
+    match (spelled, &c.value, c.format) {
+        (Some(d), _, _) => d.clone(),
+        (None, Some(v), _) => v.clone(),
+        (None, None, Format::Char) => "(already text)".to_string(),
+        _ => String::new(),
+    }
+}
+
 pub fn report(input: &str, cands: &[Candidate], all: bool) -> String {
     let mut s = String::new();
     if cands.is_empty() {
@@ -702,6 +831,67 @@ mod tests {
         for pair in cands.windows(2) {
             assert!(pair[0].score >= pair[1].score);
         }
+    }
+
+    /// Nothing else in the wild looks like `\\x48`, so when it is there the
+    /// answer should not be in doubt.
+    #[test]
+    fn escaped_hex_is_recognized_on_sight() {
+        assert_eq!(report_terse(&detect("\\x68\\x65\\x6c\\x6c\\x6f"), false), "esc     hello\n");
+        let c = &detect("\\x41\\x42\\x43")[0];
+        assert_eq!(c.format, Format::Esc);
+        assert!(c.score > 90, "score was {}", c.score);
+    }
+
+    /// A Windows path is full of things that look like short escapes — `\\temp`
+    /// is a tab, `\\new` is a newline. Requiring a real `\\xNN` is what keeps
+    /// the detector from mangling one.
+    #[test]
+    fn a_backslash_alone_does_not_make_it_escaped_hex() {
+        for s in [r"C:\temp\new", r"GET /\r\n", "hello world", "68656c6c6f"] {
+            assert_ne!(detect(s)[0].format, Format::Esc, "{s} should not read as esc");
+        }
+    }
+
+    /// The line between "worth mentioning" and "noise" — the reason terse
+    /// output can stay quiet without hiding a real ambiguity.
+    #[test]
+    fn a_rival_is_named_only_when_it_is_close() {
+        // dec 123456 vs oct 42798: different answers, too close to call.
+        let close = report_terse(&detect("123456"), false);
+        assert!(close.contains("also reads as oct (42798)"), "{close}");
+
+        // hex is not in any doubt here, so nothing is added.
+        assert_eq!(report_terse(&detect("68656c6c6f"), false), "hex     hello\n");
+        assert_eq!(report_terse(&detect("deadbeef"), false), "hex     3735928559\n");
+    }
+
+    /// A twin decodes identically, so no evidence could ever separate them —
+    /// that is worth saying however confident the score is.
+    #[test]
+    fn an_indistinguishable_twin_is_always_named() {
+        let r = report_terse(&detect("bDNhcm5fdGgzX3IwcDM1"), false);
+        assert_eq!(
+            r,
+            "b64     l3arn_th3_r0p35\n        also reads as b64url (identical here)\n"
+        );
+    }
+
+    #[test]
+    fn a_positional_base_shows_its_value_when_it_is_not_text() {
+        assert_eq!(report_terse(&detect("ff"), false), "hex     255\n");
+        assert_eq!(report_terse(&detect("01010101"), false), "bin     85\n");
+        assert_eq!(report_terse(&detect("hello world"), false), "char    (already text)\n");
+    }
+
+    /// Converting a huge blob to decimal is a bignum operation quadratic in the
+    /// input, and nobody asked for the decimal expansion of a memory dump.
+    #[test]
+    fn a_long_blob_is_not_rendered_as_a_decimal_number() {
+        let blob = "de".repeat(400);
+        let c = &detect(&blob)[0];
+        assert_eq!(c.format, Format::HEX);
+        assert!(c.value.is_none(), "should not have built a 800-digit decimal");
     }
 
     #[test]

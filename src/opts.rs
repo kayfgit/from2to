@@ -164,6 +164,13 @@ fn detect_args(cmd: Command) -> Command {
             .help("Show every candidate, not just the likely ones"),
     )
     .arg(
+        Arg::new("why")
+            .short('w')
+            .long("why")
+            .action(ArgAction::SetTrue)
+            .help("Show the reasoning, the scores and every candidate"),
+    )
+    .arg(
         Arg::new("decode")
             .short('d')
             .long("decode")

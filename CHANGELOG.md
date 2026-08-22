@@ -5,6 +5,47 @@ this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-21
+
+What the tool says, and a format for what payloads are written in.
+
+### Changed
+
+- **`whatbase` answers before it explains.** The default report was six to nine
+  lines of reasoning with the actual answer buried in it; it is now the format
+  and what the input says, and nothing else:
+
+  ```
+  $ whatbase bDNhcm5fdGgzX3IwcDM1
+  b64     l3arn_th3_r0p35
+  ```
+
+  A second line appears only when it is earned — a twin that decodes
+  identically, or a rival close enough that choosing between them is a real
+  decision — so silence is itself a claim of confidence. `whatbase 123456`
+  still warns that octal reads it as `42798`, because that one is genuinely too
+  close to call.
+- A positional base whose bytes are not printable now shows its **value**
+  rather than a note saying there is nothing to see: `whatbase deadbeef` is
+  `hex 3735928559`. A single decoded character loses to the number, since one
+  printable byte is usually a coincidence.
+- `-a`/`--all` lists every reading in the same terse two-column form.
+
+### Added
+
+- **Escaped hex, `esc`** (aliases `escape`, `fhex`, `xhex`) — the `\x48\x65`
+  notation, in both directions: `char2esc`, `esc2char`, `hex2esc` and the rest
+  of the cross product. Every byte is escaped on output so the result
+  round-trips; on input the short escapes `\n \r \t \0 \\` are understood and
+  literal text passes through, because `esc2hex 'GET /\r\n'` is what you
+  actually copy out of an exploit script. `--strict` accepts only `\xNN`.
+  It composes with byte order, so `dec2leesc --word 4 1234` is `p32(1234)`.
+- `whatbase` recognizes `esc` on sight. A real `\xNN` is required before it is
+  even a candidate — `\t` and `\n` alone would make every Windows path read as
+  escaped bytes.
+- **`-w`/`--why`** restores the previous report in full: confidence scores, the
+  evidence behind the winning reading, and the command that finishes the job.
+
 ## [0.3.0] — 2026-08-21
 
 Byte order, for the half of this tool's audience that reads memory dumps.
@@ -88,7 +129,8 @@ First release published to crates.io.
 Initial release: about sixty `<from>2<to>` commands over bases 2–36, `char`,
 base64 and base32, sharing one binary through links.
 
-[Unreleased]: https://github.com/kayfgit/from2to/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kayfgit/from2to/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kayfgit/from2to/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kayfgit/from2to/releases/tag/v0.3.0
 [0.2.0]: https://github.com/kayfgit/from2to/releases/tag/v0.2.0
 [0.1.0]: https://github.com/kayfgit/from2to/releases/tag/v0.1.0

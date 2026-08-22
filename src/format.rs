@@ -20,6 +20,8 @@ pub enum Format {
     B32,
     /// base32hex (extended hex alphabet).
     B32Hex,
+    /// Escaped hex, the `He` notation payloads are written in.
+    Esc,
 }
 
 impl Format {
@@ -69,7 +71,12 @@ impl Format {
         !self.is_positional()
     }
 
-    /// True for the base64/base32 family (as opposed to `Char`).
+    /// True for the base64/base32 family only.
+    ///
+    /// This is not "is it a byte encoding" — it is "does it need to see the
+    /// whole stream before it can emit", which is what padding requires.
+    /// `esc` is a byte encoding that streams a byte at a time, so it is
+    /// deliberately excluded.
     pub fn is_encoding(self) -> bool {
         matches!(
             self,
@@ -91,6 +98,7 @@ impl Format {
             "b64url" | "base64url" | "b64u" => Format::B64Url,
             "b32" | "base32" => Format::B32,
             "b32hex" | "base32hex" => Format::B32Hex,
+            "esc" | "escape" | "fhex" | "xhex" => Format::Esc,
             _ => {
                 let r: u32 = lower.parse().ok()?;
                 if (2..=36).contains(&r) {
@@ -109,10 +117,11 @@ impl Format {
     /// particular that none of them starts with `le` or `be`, and that none
     /// holds both a `2` and an `l`. Those two facts are what make the endian
     /// prefixes in command names unambiguous; see `names`.
-    pub const SPELLINGS: [&'static str; 29] = [
+    pub const SPELLINGS: [&'static str; 33] = [
         "bin", "b", "binary", "oct", "o", "octal", "dec", "d", "decimal", "int", "hex", "h",
         "hexadecimal", "char", "chr", "ascii", "text", "str", "raw", "utf8", "b64", "base64",
         "b64url", "base64url", "b64u", "b32", "base32", "b32hex", "base32hex",
+        "esc", "escape", "fhex", "xhex",
     ];
 
     /// The canonical short name, as used in command names.
@@ -128,6 +137,7 @@ impl Format {
             Format::B64Url => "b64url",
             Format::B32 => "b32",
             Format::B32Hex => "b32hex",
+            Format::Esc => "esc",
         }
     }
 }

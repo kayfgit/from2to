@@ -143,7 +143,15 @@ fn run_detect(m: &clap::ArgMatches) -> Fallible<ExitCode> {
         let text = Converter::new(best.format, to, Options::default()).convert(input)?;
         writeln!(out, "{}", text.strip_suffix('\n').unwrap_or(&text))?;
     } else {
-        write!(out, "{}", detect::report(input, &cands, m.get_flag("all")))?;
+        let all = m.get_flag("all");
+        // Terse by default: the question is "what is this", and the
+        // reasoning is only interesting once you doubt the answer.
+        let text = if m.get_flag("why") {
+            detect::report(input, &cands, all)
+        } else {
+            detect::report_terse(&cands, all)
+        };
+        write!(out, "{text}")?;
     }
     out.flush()?;
     Ok(ExitCode::SUCCESS)

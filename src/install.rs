@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn all_names_includes_shims_and_short_self_name() {
         let names = all_names();
-        assert_eq!(names.len(), 66);
+        assert_eq!(names.len(), 80);
         assert!(names.contains(&"hex2bin".to_string()));
         assert!(names.contains(&"f2t".to_string()));
         assert!(names.contains(&"whatbase".to_string()));

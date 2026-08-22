@@ -344,6 +344,86 @@ fn decode_encoding(text: &str, f: Format, strict: bool) -> Result<Vec<u8>, ConvE
     })
 }
 
+// ---------------------------------------------------------------- escaped hex
+
+/// Render bytes as `\x48\x65` — every byte escaped, always.
+///
+/// Never "printable as-is, the rest escaped" the way Python's `repr` does it:
+/// that spelling is ambiguous about whether a literal backslash was data, and
+/// it makes the output depend on the content. Uniform escaping round-trips.
+fn encode_esc(bytes: &[u8], upper: bool) -> String {
+    let mut out = String::with_capacity(bytes.len() * 4);
+    for &b in bytes {
+        out.push_str("\\x");
+        out.push(digit_char(b >> 4));
+        out.push(digit_char(b & 0x0f));
+    }
+    if upper { out.to_uppercase().replace("\\X", "\\x") } else { out }
+}
+
+/// The single-character escapes worth understanding on the way in.
+///
+/// Only ever *read*, never written: a payload lifted out of a real script has
+/// `\r\n` in it, and refusing that would be pedantry.
+const SHORT_ESCAPES: [(char, u8); 7] = [
+    ('n', b'\n'), ('r', b'\r'), ('t', b'\t'), ('0', 0),
+    ('\\', b'\\'), ('\'', b'\''), ('"', b'"'),
+];
+
+/// Whether an escaped-hex reading holds together, for the detector.
+///
+/// Shared rather than reimplemented so the two can never disagree about
+/// what counts as valid — the detector must not offer a reading that the
+/// converter would then refuse.
+pub(crate) fn decode_esc_ok(text: &str) -> bool {
+    decode_esc(text, false).is_ok()
+}
+
+/// Parse `\x48`, the short escapes, and — unless `strict` — literal text.
+///
+/// Mixed input is the common case, not an edge case: `GET /\r\n` is exactly
+/// what you copy out of an exploit script, and every byte of it is meant.
+fn decode_esc(text: &str, strict: bool) -> Result<Vec<u8>, ConvError> {
+    let bad = |detail: String| ConvError::BadEncoding { format: "esc".to_string(), detail };
+    let mut out = Vec::with_capacity(text.len() / 4);
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            if strict && !c.is_whitespace() {
+                return Err(bad(format!("expected an escape, found '{c}'")));
+            }
+            if !strict {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+            continue;
+        }
+        match chars.next() {
+            Some('x') | Some('X') => {
+                let mut v = 0u8;
+                for i in 0..2 {
+                    match chars.next().and_then(|h| h.to_digit(16)) {
+                        Some(d) => v = (v << 4) | d as u8,
+                        None => {
+                            return Err(bad(format!(
+                                "\\x needs two hex digits, found {i}"
+                            )));
+                        }
+                    }
+                }
+                out.push(v);
+            }
+            Some(e) => match SHORT_ESCAPES.iter().find(|(k, _)| *k == e) {
+                Some(&(_, b)) if !strict => out.push(b),
+                _ => return Err(bad(format!("unknown escape '\\{e}'"))),
+            },
+            None => return Err(bad("trailing backslash".to_string())),
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------- converter
 
 /// A configured conversion. Built once, then fed input.
@@ -680,6 +760,7 @@ impl Converter {
                     Ok(Stream::Codepoints(input.chars().collect()))
                 }
             }
+            Format::Esc => Ok(Stream::Bytes(decode_esc(input, self.opts.strict)?)),
             enc => Ok(Stream::Bytes(decode_encoding(input, enc, self.opts.strict)?)),
         }
     }
@@ -761,6 +842,10 @@ impl Converter {
                     }
                     Ok(out)
                 }
+            }
+            Format::Esc => {
+                let bytes = self.to_bytes(&stream)?;
+                Ok(encode_esc(&bytes, self.opts.upper))
             }
             enc => {
                 let bytes = self.to_bytes(&stream)?;
@@ -859,6 +944,79 @@ mod tests {
             opts,
         );
         c.convert(input).unwrap()
+    }
+
+    // ---- escaped hex
+
+    #[test]
+    fn esc_escapes_every_byte() {
+        assert_eq!(conv("char", "esc", "hello"), "\\x68\\x65\\x6c\\x6c\\x6f");
+        assert_eq!(conv("hex", "esc", "41424344"), "\\x41\\x42\\x43\\x44");
+        // Printable bytes are escaped too: uniform output round-trips, and
+        // never leaves you wondering if a backslash was data.
+        assert_eq!(conv("char", "esc", "A"), "\\x41");
+    }
+
+    #[test]
+    fn esc_decodes_back() {
+        assert_eq!(conv("esc", "char", "\\x68\\x65\\x6c\\x6c\\x6f"), "hello");
+        assert_eq!(conv("esc", "hex", "\\x41\\x42"), "4142");
+        // Round-tripping is the property that matters.
+        let text = "flag{n0t_qu1t3_4_fl4g}";
+        assert_eq!(conv("esc", "char", &conv("char", "esc", text)), text);
+    }
+
+    /// What you actually copy out of an exploit script is mixed: literal text
+    /// with escapes threaded through it.
+    #[test]
+    fn esc_reads_mixed_input() {
+        assert_eq!(conv("esc", "hex", "GET /\\r\\n"), "474554202f0d0a");
+        assert_eq!(conv("esc", "char", "A\\x42C"), "ABC");
+    }
+
+    #[test]
+    fn esc_rejects_a_malformed_escape() {
+        let bad = |s: &str| {
+            Converter::new(Format::Esc, Format::HEX, Options::default())
+                .convert(s)
+                .is_err()
+        };
+        assert!(bad("\\xZZ"), "ZZ is not hex");
+        assert!(bad("\\x4"), "one digit is not a byte");
+        assert!(bad("\\q"), "no such escape");
+        assert!(bad("trailing \\"), "nothing after the backslash");
+    }
+
+    /// `--strict` means every byte is spelled out; literal text is not input.
+    #[test]
+    fn esc_strict_wants_only_escapes() {
+        let strict = Options { strict: true, ..Default::default() };
+        assert_eq!(with_opts("esc", "hex", "\\x41\\x42", strict.clone()), "4142");
+        assert!(
+            Converter::new(Format::Esc, Format::HEX, strict)
+                .convert("A\\x42")
+                .is_err()
+        );
+    }
+
+    /// The whole point of the orthogonal byte-order design: it composes with a
+    /// format that knew nothing about it.
+    #[test]
+    fn esc_composes_with_byte_order() {
+        assert_eq!(le("lehex2esc", "0d0c0b0a").unwrap(), "\\x0a\\x0b\\x0c\\x0d");
+        assert_eq!(le("leesc2hex", "\\x0d\\x0c\\x0b\\x0a").unwrap(), "0a0b0c0d");
+        // p32(1234) — byte for byte what struct.pack('<I', 1234) gives.
+        assert_eq!(worded("dec2leesc", "1234", 4).unwrap(), "\\xd2\\x04\\x00\\x00");
+    }
+
+    /// base64 has to see the whole stream to place its padding; esc does not,
+    /// so it must not have been swept into the same bucket.
+    #[test]
+    fn esc_streams_unlike_the_padded_encodings() {
+        let c = |f, t| Converter::new(f, t, Options::default()).can_stream();
+        assert!(c(Format::Char, Format::Esc));
+        assert!(c(Format::Esc, Format::HEX));
+        assert!(!c(Format::Char, Format::B64));
     }
 
     // ---- byte order

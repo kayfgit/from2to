@@ -5,7 +5,7 @@ use crate::endian::Endpoint;
 use crate::format::Format;
 
 /// Formats that take part in the generated `<from>2<to>` shim cross product.
-pub const SHIM_FORMATS: [Format; 7] = [
+pub const SHIM_FORMATS: [Format; 8] = [
     Format::BIN,
     Format::OCT,
     Format::DEC,
@@ -13,6 +13,7 @@ pub const SHIM_FORMATS: [Format; 7] = [
     Format::Char,
     Format::B64,
     Format::B32,
+    Format::Esc,
 ];
 
 /// Positional bases that get the `ascii` spelling and the numeric shorthands.
@@ -237,9 +238,9 @@ mod tests {
             assert!(seen.insert(name, ()).is_none(), "duplicate shim {name}");
             assert_eq!(resolve(name), Some((*from, *to)), "{name} resolved wrong");
         }
-        // 42 word pairs + 8 ascii aliases + 14 little-endian. The numeric
+        // 56 word pairs + 8 ascii aliases + 14 little-endian. The numeric
         // shorthands resolve but are not installed.
-        assert_eq!(names.len(), 64);
+        assert_eq!(names.len(), 78);
     }
 
     /// The shorthands must keep working through `resolve` even though nothing

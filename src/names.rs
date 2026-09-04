@@ -98,10 +98,14 @@ pub fn shorthands() -> Vec<(String, Endpoint, Endpoint)> {
 pub fn shim_names() -> Vec<(String, Endpoint, Endpoint)> {
     let mut out = Vec::new();
 
-    // The word cross product, minus the no-op identity pairs.
+    // The word cross product. An identity pair earns a name only when it can
+    // actually do something: `hex2hex` evaluates expressions and reformats
+    // digits, so it is worth a file, while `char2char` and `b642b64` are still
+    // the no-ops they always were. `lehex2hex` set the precedent — a swap is
+    // real work even though both ends say hex.
     for from in SHIM_FORMATS {
         for to in SHIM_FORMATS {
-            if from != to {
+            if from != to || from.is_positional() {
                 out.push((
                     format!("{}2{}", from.name(), to.name()),
                     Endpoint::big(from),
@@ -238,9 +242,10 @@ mod tests {
             assert!(seen.insert(name, ()).is_none(), "duplicate shim {name}");
             assert_eq!(resolve(name), Some((*from, *to)), "{name} resolved wrong");
         }
-        // 56 word pairs + 8 ascii aliases + 14 little-endian. The numeric
-        // shorthands resolve but are not installed.
-        assert_eq!(names.len(), 78);
+        // 60 word pairs (56 across formats + 4 positional identities) + 8
+        // ascii aliases + 14 little-endian. The numeric shorthands resolve but
+        // are not installed.
+        assert_eq!(names.len(), 82);
     }
 
     /// The shorthands must keep working through `resolve` even though nothing

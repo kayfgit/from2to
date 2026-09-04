@@ -539,8 +539,11 @@ mod tests {
     #[test]
     fn all_names_includes_shims_and_short_self_name() {
         let names = all_names();
-        assert_eq!(names.len(), 80);
+        assert_eq!(names.len(), 84);
         assert!(names.contains(&"hex2bin".to_string()));
+        // An identity pair that earns its name: `hex2hex` does arithmetic.
+        assert!(names.contains(&"hex2hex".to_string()));
+        assert!(!names.contains(&"char2char".to_string()));
         assert!(names.contains(&"f2t".to_string()));
         assert!(names.contains(&"whatbase".to_string()));
         // Numeric shorthands resolve, but a file called `1628` never lands in

@@ -86,6 +86,12 @@ a whole number of words; a run of bytes that is not a whole number of words is
 an error unless \fB\-\-keep\-going\fR is given. Implies \fB\-\-bytes\fR. This
 counts \fIbytes of the value\fR, where \fB\-\-width\fR counts \fIdigits of the
 output\fR \- the two are independent and may both be given.
+.IP
+In an expression it is also the \fIregister width\fR: the arithmetic happens in
+an unsigned word of that many bytes, wrapping after every operation. Both
+readings are the same claim about the same value, so they compose \-
+.B ledec2hex \-\-word 4 '1+1'
+masks to 32 bits and swaps in 4-byte units. See \fBARITHMETIC\fR.
 .TP
 .BR \-u ", " \-\-upper
 Uppercase the output digits.
@@ -117,6 +123,8 @@ Do not add a trailing newline.
 .TP
 .B \-\-strict
 Reject \fB0x\fR/\fB0b\fR/\fB0o\fR prefixes, \fB_\fR spacers and unpadded base64.
+It also turns off expression math, so an input meant to be pure data gives the
+same digit error it always did.
 .TP
 .BR \-h ", " \-\-help
 Print help and exit.
@@ -132,6 +140,83 @@ For \fBchar\fR input, whitespace is data rather than a separator \- except for
 one trailing newline arriving from a pipe, which is dropped so that
 .B echo hi | char2hex
 does the obvious thing.
+.SH ARITHMETIC
+A positional value may be an expression, and the answer comes out in the target
+format. Bare literals are read in the \fIsource\fR base, so
+.B hex2hex '4438+1a'
+is
+.B 4452
+and
+.B hex2dec '4438+1a'
+is
+.BR 17490 .
+.PP
+\fBQuote your expressions.\fR Almost every operator \- \fB*\fR, \fB&\fR,
+\fB|\fR, \fB<\fR, \fB>\fR, \fB(\fR, \fB)\fR \- is also a shell metacharacter. A
+leading unary minus needs \fB\-\-\fR, as in
+.BR "hex2hex \-\- '\-5+3'" .
+.PP
+\fBSubtraction is spelled with a space.\fR A \fB\-\fR with digits hard up
+against it on both sides is punctuation inside one value, not an operator, so
+.B hex2hex '4500 \- 4438'
+is
+.B c8
+while
+.B hex2hex '4500\-4438'
+is an error. Hex-shaped identifiers are punctuated with dashes and every other
+character in them is a hex digit, so the dash is the only thing that tells
+.B 550e8400\-e29b\-41d4\-a716\-446655440000
+(a UUID) and
+.B 00\-11\-22\-33\-44\-55
+(a MAC address) apart from a chain of subtractions. Both are an error, as they
+were before arithmetic existed. Only \fB\-\fR needs the rule; nothing is
+written with a \fB+\fR in the middle of it.
+.PP
+The operators, loosest binding first: \fB|\fR, then \fB^\fR, then \fB&\fR, then
+\fB<<\fR and \fB>>\fR, then \fB+\fR and \fB\-\fR, then \fB*\fR, \fB/\fR and
+\fB%\fR, then unary \fB\-\fR and \fB~\fR, then \fB(\fR \fB)\fR. This is C's
+table, shifts included \- \fB1<<2+3\fR is 32, not 7 \- because the point is to
+agree with the code you are reading. \fB^\fR is exclusive or, never
+exponentiation.
+.PP
+A prefix never overrides the source base. \fB0b1\fR is 0xb1 in base 16 both on
+its own and inside an expression, because in hex \fBb\fR is a digit and there is
+no reading that would be safe to guess.
+.PP
+Division and remainder truncate toward zero, as in C, so \fB\-7/2\fR is \-3.
+Without \fB\-\-word\fR the arithmetic is arbitrary-precision and signed \-
+.B hex2hex '4438 \- 4500'
+is
+.BR \-c8 ,
+and \fB>>\fR sign-extends. With \fB\-\-word \fIN\fR it happens in an unsigned
+\fIN\fR-byte register instead, wrapping after every operation, so
+.B hex2hex \-\-word 2 '4438 \- 4500'
+is
+.BR ff38 ,
+\fB>>\fR is a logical shift, and the result is padded out to the register width.
+.PP
+A computed value has no \fIwritten\fR width, so its digits are minimal \-
+.B hex2bin 'ff & 0f'
+is
+.B 1111
+where
+.B hex2bin 0f
+is
+.BR 00001111 .
+Ask for a width with \fB\-\-width\fR or \fB\-\-word\fR.
+.PP
+A negative result prints with a sign into a number base, and is an error into
+\fBchar\fR, \fBb64\fR, \fBb32\fR, \fBesc\fR or a byte-order swap, none of which
+have any way to say it. Only a positional source has expressions at all: a
+\fBchar\fR source has no digits, so
+.B char2hex '1+1'
+is still the hex of those three characters.
+.PP
+A newline or a comma separates values; a space does not. So
+.B hex2hex '1+1, 2+2'
+is two answers, while
+.B hex2dec 'ff 10'
+is still two numbers.
 .SH BYTE ORDER
 Either half of a conversion name may carry an \fBle\fR or \fBbe\fR prefix:
 .B lehex2dec

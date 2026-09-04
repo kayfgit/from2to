@@ -145,6 +145,161 @@ fn trailing_newline_can_be_suppressed() {
     assert_eq!(run(&["dec", "char", "-n", "112"]).stdout, "p");
 }
 
+// ------------------------------------------------------ expression math
+
+/// The loop this feature exists to close: read an address off the
+/// disassembly, do the math, read the answer in the same base.
+#[test]
+fn evaluates_address_math_through_the_shims() {
+    let dir = temp_dir("expr");
+    for (name, args, expected) in [
+        ("hex2hex", vec!["4438+1a"], "4452"),
+        ("hex2dec", vec!["4438+1a"], "17490"),
+        ("hex2hex", vec!["(4500 - 4438)/2"], "64"),
+        ("dec2hex", vec!["1000*4"], "fa0"),
+        ("hex2bin", vec!["ff & 0f"], "1111"),
+        ("hex2hex", vec!["4438 | 8000"], "c438"),
+        ("hex2hex", vec!["4438 - 4500"], "-c8"),
+        ("hex2hex", vec!["--word", "2", "4438 - 4500"], "ff38"),
+        ("hex2hex", vec!["--word", "2", "~0"], "ffff"),
+        // Shifts bind looser than +, exactly as in C.
+        ("hex2hex", vec!["1<<2+3"], "20"),
+        // A comma still separates values, so two expressions are two answers.
+        ("hex2hex", vec!["1+1, 2+2"], "2\n4"),
+    ] {
+        let shim = make_shim(&dir, name);
+        let out = run_exe(&shim, &args, None);
+        assert_eq!(out.out(), expected, "{name} {args:?}: {}", out.stderr);
+        assert_eq!(out.code, 0, "{name} {args:?} exited {}", out.code);
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `main` joins the arguments with a space before converting, so an
+/// unquoted expression whose shell split it into three works anyway.
+#[test]
+fn spaced_operators_survive_the_argv_join() {
+    assert_eq!(run(&["hex", "hex", "4438", "+", "1a"]).out(), "4452");
+}
+
+/// Everything an operator character newly claims used to be a hard error, so
+/// nothing here may have changed. These are the regressions that would matter.
+#[test]
+fn inputs_without_an_operator_are_untouched() {
+    assert_eq!(run(&["hex", "dec", "ff", "10"]).out(), "255\n16");
+    assert_eq!(run(&["hex", "dec", "ff,10"]).out(), "255\n16");
+    assert_eq!(run(&["hex", "bin", "0f"]).out(), "00001111");
+    // `clean_token` strips only the source base's own prefix, so `0b` in hex
+    // is the number 0xb — and it must read the same inside an expression.
+    assert_eq!(run(&["hex", "dec", "0b"]).out(), "11");
+    assert_eq!(run(&["hex", "dec", "0b1+0"]).out(), "177");
+    // A char source has no digits, so its text is data, `+` and all.
+    assert_eq!(run(&["char", "hex", "1+1"]).out(), "312b31");
+    // A lone angle bracket is a shell mistake far more often than a shift.
+    assert!(run(&["hex", "dec", "1<2"]).stderr.contains("bad digit"));
+    assert!(run(&["hex", "dec", "00:11:22"]).stderr.contains("bad digit"));
+}
+
+#[test]
+fn strict_turns_expressions_back_into_bad_digits() {
+    let out = run(&["hex", "dec", "--strict", "4438+1a"]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("bad digit"), "{}", out.stderr);
+}
+
+/// Hex-shaped identifiers are punctuated with dashes, and every other
+/// character in them is a hex digit — so nothing but the dash itself stops a
+/// UUID or a MAC address reading as a chain of subtractions. Arithmetic must
+/// not turn either into a plausible number at exit 0; both were a clean digit
+/// error before it existed, and both stay an error.
+#[test]
+fn a_dashed_identifier_is_an_error_and_never_a_sum() {
+    for id in [
+        "550e8400-e29b-41d4-a716-446655440000", // UUID
+        "00-11-22-33-44-55",                    // MAC address
+        "1a-2b",                                // a dashed byte pair
+    ] {
+        let out = run(&["hex", "dec", id]);
+        assert_eq!(out.code, 1, "hex2dec {id} produced `{}`", out.out());
+        assert!(out.stderr.contains("not subtraction"), "{id}: {}", out.stderr);
+    }
+    // The same shape with `-k`, which is what bulk input reaches for: skipped
+    // with a warning, never silently summed.
+    let out = run(&["hex", "dec", "-k", "00-11-22"]);
+    assert_eq!(out.out(), "");
+    assert!(out.stderr.contains("bad digit"), "{}", out.stderr);
+}
+
+/// A negative is printable as a number and not as a byte, and the difference
+/// has to be an error rather than a magnitude quietly standing in.
+#[test]
+fn a_negative_result_is_a_sign_or_an_error() {
+    assert_eq!(run(&["hex", "dec", "1 - 5"]).out(), "-4");
+    assert_eq!(run(&["hex", "hex", "-x", "4438 - 4500"]).out(), "-0xc8");
+    for to in ["char", "b64", "esc"] {
+        let out = run(&["hex", to, "1 - 5"]);
+        assert_eq!(out.code, 1, "hex2{to} accepted a negative");
+        assert!(out.stderr.contains("--word"), "hex2{to}: {}", out.stderr);
+    }
+}
+
+#[test]
+fn a_broken_expression_says_what_is_wrong() {
+    for (input, want) in [
+        ("(4438+1a", "never closed"),
+        ("10/0", "division by zero"),
+        ("4438+", "ends after an operator"),
+        ("1<<ffffff", "bit limit"),
+        ("ff 10 aa+1", "nothing between them"),
+        ("4438+1a-5", "not subtraction"),
+    ] {
+        let out = run(&["hex", "hex", input]);
+        assert_eq!(out.code, 1, "{input} should fail");
+        assert!(out.stderr.contains(want), "{input}: {}", out.stderr);
+    }
+}
+
+/// A chunk is a line, so an expression per line is what a stream is.
+#[test]
+fn expressions_stream_a_line_at_a_time() {
+    assert_eq!(run_stdin(&["hex", "hex"], "1+1\n2+2\nff&0f\n").out(), "2\n4\nf");
+}
+
+/// `-k` promises to skip what fails, never to produce less than before.
+#[test]
+fn keep_going_still_falls_back_to_a_token_list() {
+    let out = run(&["hex", "dec", "-k", "ff 1+1 10"]);
+    assert_eq!(out.out(), "255\n16");
+    assert_eq!(out.code, 0);
+}
+
+/// `--word` makes the same claim to the arithmetic and to the swap.
+#[test]
+fn a_word_composes_with_byte_order() {
+    assert_eq!(run(&["ledec", "hex", "--word", "4", "1+1"]).out(), "2000000");
+    assert_eq!(run(&["hex", "lehex", "--word", "2", "4438 - 4500"]).out(), "38ff");
+}
+
+/// The four identity pairs are installed now, because they do something.
+#[test]
+fn positional_identity_commands_exist() {
+    let listed = run(&["list"]).stdout;
+    // Each line is `name  from -> to`, so compare the first field.
+    let named = |want: &str| listed.lines().any(|l| l.split_whitespace().next() == Some(want));
+    for name in ["hex2hex", "dec2dec", "bin2bin", "oct2oct"] {
+        assert!(named(name), "{name} is not listed");
+    }
+    assert!(!named("char2char"), "char2char is still a no-op");
+    assert!(!named("b642b64"), "b642b64 is still a no-op");
+
+    let dir = temp_dir("identity");
+    let shim = make_shim(&dir, "hex2hex");
+    // Without an expression it is a formatter, which is worth having too.
+    assert_eq!(run_exe(&shim, &["ff"], None).out(), "ff");
+    assert_eq!(run_exe(&shim, &["-u", "-g", "2", "deadbeef"], None).out(), "DE AD BE EF");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // ----------------------------------------------------------- argv[0]
 
 #[test]
@@ -475,7 +630,7 @@ fn list_names_every_command() {
     let out = run(&["list"]);
     assert_eq!(out.code, 0);
     let lines: Vec<&str> = out.stdout.lines().collect();
-    assert_eq!(lines.len(), 79);
+    assert_eq!(lines.len(), 83);
     assert!(lines.iter().any(|l| l.starts_with("hex2bin ")));
     assert!(lines.iter().any(|l| l.starts_with("whatbase ")));
     // The numeric shorthands are not commands any more, only `f2t` forms.
@@ -506,8 +661,8 @@ fn install_then_uninstall_round_trips() {
 
     let out = run_exe(&exe, &["install", "--dir", dir_s], None);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    // 78 shims + whatbase + f2t + the binary.
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 81);
+    // 82 shims + whatbase + f2t + the binary.
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 85);
 
     // A shim really works.
     let shim = dir.join(format!("hex2bin{EXE_SUFFIX}"));

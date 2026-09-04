@@ -9,10 +9,11 @@
 //! 3. Anything else: `BigUint`.
 
 use crate::endian::{Endian, swap_words};
+use crate::expr;
 use crate::format::Format;
 use data_encoding::{BASE32, BASE32HEX, BASE32HEX_NOPAD, BASE32_NOPAD, BASE64, BASE64URL,
                     BASE64URL_NOPAD, BASE64_NOPAD, Encoding};
-use num_bigint::BigUint;
+use num_bigint::{BigInt, BigUint, Sign};
 use std::fmt;
 
 const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
@@ -40,6 +41,10 @@ pub enum ConvError {
     RaggedWord { len: usize, word: usize },
     /// A value needs more room than the word size allows.
     TooWide { token: String, want: usize },
+    /// An expression that could not be parsed or evaluated.
+    BadExpr { text: String, detail: crate::expr::ExprError },
+    /// A negative result reaching somewhere that has no way to say so.
+    NegativeResult { text: String, wher: String },
 }
 
 impl fmt::Display for ConvError {
@@ -71,6 +76,12 @@ impl fmt::Display for ConvError {
             ConvError::TooWide { token, want } => {
                 write!(f, "'{token}' does not fit in {want} bytes")
             }
+            ConvError::BadExpr { text, detail } => write!(f, "'{text}': {detail}"),
+            ConvError::NegativeResult { text, wher } => write!(
+                f,
+                "'{text}' is negative, and {wher} cannot express that; \
+                 add --word N to wrap it to N bytes"
+            ),
         }
     }
 }
@@ -162,11 +173,16 @@ fn small_to_radix(mut v: u128, base: u32) -> String {
 struct Num {
     digits: Vec<u8>,
     base: u32,
+    /// Set only by an expression result; digits somebody wrote are unsigned.
+    neg: bool,
     /// The original text, kept only for error messages.
     text: String,
 }
 
 impl Num {
+    /// The magnitude, which says nothing about the sign — callers must consult
+    /// `neg` themselves. Forgetting to is how a negative silently renders as a
+    /// positive, which is the one failure this whole feature must not have.
     fn to_mag(&self) -> Mag {
         let mut m = Mag::Small(0);
         for &d in &self.digits {
@@ -302,6 +318,7 @@ fn decode_num(tok: &str, base: u32, strict: bool) -> Result<Num, ConvError> {
     Ok(Num {
         digits,
         base,
+        neg: false,
         text: tok.to_string(),
     })
 }
@@ -556,6 +573,13 @@ impl Converter {
 
     /// Render one number in the target base.
     fn num_to_string(&self, n: &Num, to_base: u32) -> String {
+        let s = self.mag_to_string(n, to_base);
+        // Outside `finish_digits`, so the sign lands outside the `0x` prefix
+        // and is not counted against `--width`.
+        if n.neg { format!("-{s}") } else { s }
+    }
+
+    fn mag_to_string(&self, n: &Num, to_base: u32) -> String {
         let to_bits = to_base.is_power_of_two().then(|| to_base.trailing_zeros());
         match (n.bits_per_digit(), to_bits) {
             // Path 1: bit regrouping, no bignum.
@@ -594,6 +618,35 @@ impl Converter {
 ///
 /// Free rather than a method: the body never looked at `self`, and the
 /// byte-order pass needs it from outside the impl.
+/// A `Num` from a computed value, rather than from digits somebody wrote.
+///
+/// An expression result carries **no written width** — nobody wrote its digits
+/// down — so the digits are minimal, the same rule base 10 already follows.
+/// A register width is the exception: `--word 2` says the value *is* two bytes
+/// wide, so a byte-aligned base is padded out to say so. That padding lives in
+/// the digit vector rather than being applied at the end, because everything
+/// downstream — `num_to_bytes`, `byte_span`, the swap — reads the width off
+/// `digits.len()`.
+fn num_from_mag(v: &BigInt, base: u32, word: Option<usize>, text: String) -> Num {
+    let s = v.magnitude().to_str_radix(base);
+    let mut digits: Vec<u8> = s.chars().map(|c| c.to_digit(base).unwrap() as u8).collect();
+    if let Some(w) = word {
+        if let Some(bits) = base.is_power_of_two().then(|| base.trailing_zeros()) {
+            // Base 8 is a power of two but not byte-aligned, so it has no
+            // digit count that means "two bytes"; it wraps without padding.
+            if 8 % bits == 0 {
+                let want = 8 * w / bits as usize;
+                if digits.len() < want {
+                    let mut padded = vec![0u8; want - digits.len()];
+                    padded.append(&mut digits);
+                    digits = padded;
+                }
+            }
+        }
+    }
+    Num { digits, base, neg: v.sign() == Sign::Minus, text }
+}
+
 fn num_to_bytes(n: &Num) -> Vec<u8> {
     match n.bits_per_digit() {
         Some(fb) => {
@@ -641,7 +694,7 @@ fn num_from_bytes(bytes: &[u8], base: u32, text: String) -> Num {
     match base.is_power_of_two().then(|| base.trailing_zeros()) {
         Some(tb) => {
             let out_len = (bytes.len() * 8).div_ceil(tb as usize).max(1);
-            Num { digits: regroup_to(bytes, 8, tb, out_len), base, text }
+            Num { digits: regroup_to(bytes, 8, tb, out_len), base, neg: false, text }
         }
         None => {
             let mut m = Mag::Small(0);
@@ -653,7 +706,7 @@ fn num_from_bytes(bytes: &[u8], base: u32, text: String) -> Num {
                 .chars()
                 .map(|c| c.to_digit(base).unwrap() as u8)
                 .collect();
-            Num { digits, base, text }
+            Num { digits, base, neg: false, text }
         }
     }
 }
@@ -713,6 +766,12 @@ impl Converter {
             Stream::Nums(nums) => {
                 let mut out = Vec::with_capacity(nums.len());
                 for n in nums {
+                    if n.neg {
+                        return Err(ConvError::NegativeResult {
+                            text: n.text.clone(),
+                            wher: "a byte-order swap".to_string(),
+                        });
+                    }
                     let bytes = self
                         .byte_span(&n)
                         .and_then(|want| num_to_bytes_at(&n, want));
@@ -736,19 +795,56 @@ impl Converter {
         }
     }
 
+    /// Evaluate one segment as an expression, giving a `Num` in the source
+    /// base. `--word` doubles as the register width, which is the same claim
+    /// about the same value it already makes for the byte-order swap.
+    fn eval_segment(&self, seg: &str, base: u32) -> Result<Num, ConvError> {
+        let word = self.opts.word.filter(|w| *w > 0);
+        let text = seg.trim().to_string();
+        let v = expr::eval(seg, base, word).map_err(|detail| ConvError::BadExpr {
+            text: text.clone(),
+            detail,
+        })?;
+        Ok(num_from_mag(&v, base, word, text))
+    }
+
     /// Decode a chunk of source text into the intermediate form.
     fn decode(&self, input: &str, warnings: &mut Vec<ConvError>) -> Result<Stream, ConvError> {
         match self.from {
             Format::Positional(base) => {
                 let mut nums = Vec::new();
-                for tok in input.split(|c: char| c.is_whitespace() || c == ',') {
-                    if tok.is_empty() {
+                // Two levels, where there used to be one split on whitespace
+                // and commas. A newline or a comma separates *records*; a space
+                // does not, so `4438 + 1a` is one expression while `ff 10` is
+                // still two values. For any input without an operator in it the
+                // two splits together are exactly the old one.
+                for seg in input.split(['\n', '\r', ',']) {
+                    if seg.trim().is_empty() {
                         continue;
                     }
-                    match decode_num(tok, base, self.opts.strict) {
-                        Ok(n) => nums.push(n),
-                        Err(e) if self.opts.keep_going => warnings.push(e),
-                        Err(e) => return Err(e),
+                    // `--strict` already means "reject the leniency
+                    // affordances", and an expression is the largest one — so
+                    // it is also the documented way back to the plain error.
+                    if !self.opts.strict && expr::has_operator(seg) {
+                        match self.eval_segment(seg, base) {
+                            Ok(n) => {
+                                nums.push(n);
+                                continue;
+                            }
+                            // `-k` must never produce *less* than it used to.
+                            // Before expressions existed this segment was a
+                            // token list, so fall back to one and let the loop
+                            // below report whichever tokens are actually bad.
+                            Err(_) if self.opts.keep_going => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    for tok in seg.split_whitespace() {
+                        match decode_num(tok, base, self.opts.strict) {
+                            Ok(n) => nums.push(n),
+                            Err(e) if self.opts.keep_going => warnings.push(e),
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
                 Ok(Stream::Nums(nums))
@@ -769,7 +865,18 @@ impl Converter {
     fn to_bytes(&self, s: &Stream) -> Result<Vec<u8>, ConvError> {
         Ok(match s {
             Stream::Bytes(b) => b.clone(),
-            Stream::Nums(nums) => nums.iter().flat_map(num_to_bytes).collect(),
+            Stream::Nums(nums) => {
+                // The one funnel for every byte-shaped target — char-as-bytes,
+                // esc, base64, base32 — so the negative check belongs here
+                // rather than four times over.
+                if let Some(n) = nums.iter().find(|n| n.neg) {
+                    return Err(ConvError::NegativeResult {
+                        text: n.text.clone(),
+                        wher: self.to.to_string(),
+                    });
+                }
+                nums.iter().flat_map(num_to_bytes).collect()
+            }
             Stream::Codepoints(chars) => chars.iter().collect::<String>().into_bytes(),
         })
     }
@@ -822,6 +929,14 @@ impl Converter {
                     match &stream {
                         Stream::Nums(nums) => {
                             for n in nums {
+                                // `to_mag` drops the sign, so -4 would quietly
+                                // become U+0004 if this were not checked first.
+                                if n.neg {
+                                    return Err(ConvError::NegativeResult {
+                                        text: n.text.clone(),
+                                        wher: "a code point".to_string(),
+                                    });
+                                }
                                 match n.to_mag().to_u32().and_then(char::from_u32) {
                                     Some(cp) => out.push(cp),
                                     None if self.opts.keep_going => {
@@ -944,6 +1059,132 @@ mod tests {
             opts,
         );
         c.convert(input).unwrap()
+    }
+
+
+    // ---- expression math
+
+    fn err_of(from: &str, to: &str, input: &str, opts: Options) -> ConvError {
+        let c = Converter::new(
+            Format::parse(from).unwrap(),
+            Format::parse(to).unwrap(),
+            opts,
+        );
+        c.convert(input).expect_err(input)
+    }
+
+    /// The whole point: address math without two conversions around it.
+    #[test]
+    fn a_positional_value_may_be_an_expression() {
+        assert_eq!(conv("hex", "hex", "4438+1a"), "4452");
+        assert_eq!(conv("hex", "dec", "4438+1a"), "17490");
+        assert_eq!(conv("hex", "hex", "(4500 - 4438)/2"), "64");
+        assert_eq!(conv("dec", "hex", "1000*4"), "fa0");
+        assert_eq!(conv("hex", "bin", "ff & 0f"), "1111");
+    }
+
+    /// An expression result has no *written* width, because nobody wrote its
+    /// digits down — the same rule base 10 already follows.
+    #[test]
+    fn a_computed_value_has_no_natural_width() {
+        assert_eq!(conv("hex", "bin", "0f"), "00001111");
+        assert_eq!(conv("hex", "bin", "ff & 0f"), "1111");
+    }
+
+    /// `--word` is a register: the value wraps into it and is padded out to
+    /// say how wide it is.
+    #[test]
+    fn a_word_makes_the_arithmetic_fixed_width() {
+        let w = |n| Options { word: Some(n), ..Default::default() };
+        assert_eq!(with_opts("hex", "hex", "4438 - 4500", w(2)), "ff38");
+        assert_eq!(with_opts("hex", "hex", "0 - 1", w(2)), "ffff");
+        assert_eq!(with_opts("hex", "hex", "ff & 0f", w(2)), "000f");
+        assert_eq!(with_opts("hex", "bin", "1+0", w(2)), "0000000000000001");
+        // Base 8 is a power of two but not byte-aligned, so it wraps without
+        // gaining a digit width it cannot express.
+        assert_eq!(with_opts("oct", "oct", "0 - 1", w(1)), "377");
+    }
+
+    /// Without a register there is nothing to wrap into, so the sign is real
+    /// and gets printed — outside the `0x` prefix.
+    #[test]
+    fn a_negative_result_keeps_its_sign() {
+        assert_eq!(conv("hex", "hex", "4438 - 4500"), "-c8");
+        assert_eq!(conv("hex", "dec", "1 - 5"), "-4");
+        let pre = Options { prefix: true, ..Default::default() };
+        assert_eq!(with_opts("hex", "hex", "4438 - 4500", pre), "-0xc8");
+    }
+
+    /// `to_mag` discards the sign, so every byte-shaped target has to check
+    /// `neg` itself. A miss here turns -4 into U+0004 without a word of
+    /// warning, which is the one failure this feature must not have.
+    #[test]
+    fn a_negative_never_reaches_a_byte() {
+        for to in ["char", "b64", "b32", "esc"] {
+            assert!(
+                matches!(
+                    err_of("hex", to, "1 - 5", Options::default()),
+                    ConvError::NegativeResult { .. }
+                ),
+                "hex2{to} let a negative through"
+            );
+        }
+        // The byte-order path takes its width from bytes too.
+        assert!(matches!(
+            le("hex2lehex", "1 - 5"),
+            Err(ConvError::NegativeResult { .. })
+        ));
+        // char as code points is a separate arm from char as bytes.
+        let cp = Options { bytes_mode: Some(false), ..Default::default() };
+        assert!(matches!(
+            err_of("hex", "char", "1 - 5", cp),
+            ConvError::NegativeResult { .. }
+        ));
+    }
+
+    /// A newline or a comma separates records; a space does not.
+    #[test]
+    fn segments_split_on_records_not_spaces() {
+        assert_eq!(conv("hex", "dec", "ff 10"), "255\n16");
+        assert_eq!(conv("hex", "dec", "ff,10"), "255\n16");
+        assert_eq!(conv("hex", "hex", "1+1, 2+2"), "2\n4");
+        assert_eq!(conv("hex", "hex", "4438 + 1a"), "4452");
+        assert_eq!(conv("hex", "hex", "1+1\n2+2"), "2\n4");
+    }
+
+    /// `--strict` already rejects the leniency affordances, and an expression
+    /// is the largest one — so it is the way back to the plain error.
+    #[test]
+    fn strict_turns_expressions_back_into_bad_digits() {
+        let s = Options { strict: true, ..Default::default() };
+        assert!(matches!(
+            err_of("hex", "hex", "4438+1a", s),
+            ConvError::BadDigit { .. }
+        ));
+    }
+
+    /// `-k` must never produce *less* than it did before expressions existed,
+    /// so a segment that will not parse falls back to being a token list.
+    #[test]
+    fn keep_going_falls_back_to_a_token_list() {
+        let k = Options { keep_going: true, ..Default::default() };
+        assert_eq!(with_opts("hex", "dec", "ff 1+1 10", k), "255\n16");
+    }
+
+    #[test]
+    fn a_broken_expression_names_the_problem() {
+        assert!(matches!(
+            err_of("hex", "hex", "10/0", Options::default()),
+            ConvError::BadExpr { detail: crate::expr::ExprError::DivZero, .. }
+        ));
+    }
+
+    /// `--word` says the same thing to the arithmetic and to the swap: this
+    /// value is N bytes wide.
+    #[test]
+    fn a_word_composes_with_byte_order() {
+        assert_eq!(worded("ledec2hex", "1+1", 4).unwrap(), "2000000");
+        assert_eq!(worded("hex2lehex", "4438 - 4500", 2).unwrap(), "38ff");
     }
 
     // ---- escaped hex

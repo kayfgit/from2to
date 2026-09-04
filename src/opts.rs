@@ -23,6 +23,9 @@ EXAMPLES:
     lehex2dec 0d0c0b0a            168496141  (a word out of a memory dump)
     dec2lehex --word 4 1234       d2040000   (pack one back)
 
+    hex2hex '4438+1a'             4452       (math, in the source base)
+    hex2hex --word 2 '4438-4500'  ff38       (in a 16-bit register)
+
     nc example.com 4000 | dec2char
         decode a stream of decimal code points as it arrives
 

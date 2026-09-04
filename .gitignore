@@ -48,6 +48,12 @@ NOTES.md
 /notes/
 /scratch/
 
+# Generated reference pages that live outside the repo by default. Ignored so
+# that dropping one in here to read it locally is not one `git add -A` away
+# from publishing it.
+cookbook.html
+*.local.html
+
 # Signing and deploy keys. Nothing here should ever hold one, but a stray
 # `cp ~/.ssh/aur .` while setting up the AUR would otherwise be one `git add -A`
 # away from publishing a private key.

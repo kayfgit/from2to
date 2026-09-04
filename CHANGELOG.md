@@ -3,7 +3,81 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-09-03
+
+Arithmetic in the base you are already reading.
+
+### Added
+
+- **Arithmetic.** A positional value may now be an expression, so the math you
+  were doing between two conversions is one command:
+
+  ```console
+  $ hex2hex '4438+1a'
+  4452
+  $ hex2hex '(4500-4438)/2'
+  64
+  ```
+
+  Bare literals are read in the source base and the answer comes out in the
+  target one, so `hex2dec '4438+1a'` is `17490`. The operators are C's — `+ - *
+  / %`, unary `-` and `~`, `& | ^ << >>` and `( )` — and so is their
+  precedence, shifts binding looser than `+` included, because the point is to
+  agree with the disassembly rather than to have better opinions than it.
+
+  **No flag turns this on.** Every operator character was a hard digit error
+  before, so nothing that worked has changed meaning: `hex2dec ff 10` is still
+  two numbers, `char2hex '1+1'` is still `312b31`, and a lone `<` is still a
+  bad digit. A newline or a comma separates values; a space does not.
+  `--strict` turns it off, alongside the other leniencies.
+
+  **Subtraction is spelled with a space.** A `-` with digits hard up against it
+  on both sides is punctuation inside one value, so `hex2hex '4500 - 4438'` is
+  `c8` and `hex2hex '4500-4438'` is an error naming the fix. The rule is what
+  keeps a hex-shaped identifier from reading as arithmetic: every character in
+  `550e8400-e29b-41d4-a716-446655440000` and `00-11-22-33-44-55` is a hex
+  digit, so the dash is the only thing separating a UUID and a MAC address
+  from a chain of subtractions. Both were a clean digit error before
+  arithmetic existed and both still are — answering them with a plausible
+  number at exit 0 is the one outcome this tool refuses everywhere else. Only
+  `-` needs the rule; nothing is written with a `+` in the middle of it, so
+  `hex2hex '4438+1a'` needs no spaces.
+
+  A prefix still never overrides the source base: `0b1` is `0xb1` in hex both
+  on its own and inside an expression. In hex `0d26` is already the perfectly
+  good number `0x0d26`, and quietly picking one of two readings of an address
+  is exactly what this tool refuses to do elsewhere.
+
+- **`--word` is also a register width.** Without it the arithmetic is signed
+  and arbitrarily large, so `hex2hex '4438-4500'` is `-c8`. With it, the whole
+  evaluation happens in an unsigned N-byte register, wrapping after every
+  operation, which is what the 16-bit machine in front of you actually does:
+
+  ```console
+  $ hex2hex --word 2 '4438-4500'
+  ff38
+  $ hex2hex --word 2 '~0'
+  ffff
+  ```
+
+  In a register `>>` is a logical shift and the result is padded out to the
+  width. It is the same claim as the byte-order reading — "this value is N
+  bytes wide" — so the two compose: `ledec2hex --word 4 '1+1'` is `2000000`.
+
+- **`hex2hex`, `dec2dec`, `bin2bin` and `oct2oct` are installed.** The identity
+  pairs were excluded as no-ops, and arithmetic retires that reason —
+  `hex2hex` is the hex calculator. `lehex2hex` set the precedent: an identity
+  pair earns a name when it does something. `char2char` and `b642b64` stay
+  excluded, since they still do not. A bare `from2to install` now creates 84
+  commands rather than 80, and `from2to list` covers 83 names rather than 79.
+
+### Changed
+
+- A negative result is an error rather than a magnitude wherever there is no
+  way to say it — into `char`, `b64`, `b32`, `esc`, or a byte-order swap. The
+  message names `--word` as the fix, since wrapping to a register is usually
+  what was meant.
+
 
 ## [0.4.0] — 2026-08-21
 
@@ -129,7 +203,8 @@ First release published to crates.io.
 Initial release: about sixty `<from>2<to>` commands over bases 2–36, `char`,
 base64 and base32, sharing one binary through links.
 
-[Unreleased]: https://github.com/kayfgit/from2to/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kayfgit/from2to/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/kayfgit/from2to/releases/tag/v0.5.0
 [0.4.0]: https://github.com/kayfgit/from2to/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kayfgit/from2to/releases/tag/v0.3.0
 [0.2.0]: https://github.com/kayfgit/from2to/releases/tag/v0.2.0

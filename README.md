@@ -19,7 +19,7 @@ flag{d3c0d3d_1n_0n3_p1p3}
 ```
 
 No Python REPL, no `awk`, no looking up `printf` format strings. One binary
-installs ~79 short commands — `hex2bin`, `dec2char`, `char2hex`, `hex2b64` —
+installs ~83 short commands — `hex2bin`, `dec2char`, `char2hex`, `hex2b64` —
 each of which takes its input from the command line or from stdin.
 
 And when you do not know what you are looking at yet, `whatbase` works it out:
@@ -43,7 +43,7 @@ rescue shells too.
 **Debian, Ubuntu, Kali, Parrot** — `.deb` for `amd64` and `arm64`:
 
 ```console
-$ sudo dpkg -i from2to_0.3.0_amd64.deb
+$ sudo dpkg -i from2to_0.5.0_amd64.deb
 $ from2to install
 ```
 
@@ -79,7 +79,7 @@ The second command creates the per-conversion commands and prints where they
 went:
 
 ```console
-installed 80 commands via symlink in /home/you/.cargo/bin
+installed 84 commands via symlink in /home/you/.cargo/bin
 ```
 
 Open a new shell so they are picked up, then check it worked:
@@ -137,7 +137,8 @@ that one needs `--force` before install will touch it.
 
 | Group | Names |
 |---|---|
-| Number bases | `bin` `oct` `dec` `hex`, in every ordered pair: `hex2bin`, `dec2hex`, `bin2oct`, … |
+| Number bases | `bin` `oct` `dec` `hex`, in every pair: `hex2bin`, `dec2hex`, `bin2oct`, … |
+| Arithmetic | any number base to itself: `hex2hex '4438+1a'`, `dec2dec`, … |
 | Text | `char` (alias `ascii`): `dec2char`, `hex2char`, `char2hex`, `dec2ascii`, … |
 | Encodings | `b64` `b32`: `hex2b64`, `b642char`, `char2b32`, `b642hex`, … |
 | Escaped hex | `esc` (alias `fhex`): `char2esc`, `esc2char`, `hex2esc`, … |
@@ -376,6 +377,177 @@ aGVsbG8=
 
 Base 10 has no such structure, so decimal results are always bare.
 
+## Arithmetic
+
+Reading disassembly means doing math on addresses, and that used to be two
+conversions wrapped around a step you did in your head. Now it is one command,
+because a value can be an expression:
+
+```console
+$ hex2hex '4438+1a'
+4452
+$ hex2hex '(4500 - 4438)/2'    # how many words is that jump?
+64
+$ dec2hex '1000*4'
+fa0
+```
+
+Bare literals are read in the **source** base, and the answer comes out in the
+target one — so the whole thing stays in hex, or crosses over, exactly as the
+command name says:
+
+```console
+$ hex2dec '4438+1a'
+17490
+$ hex2bin 'ff & 0f'
+1111
+```
+
+**Quote your expressions.** Almost every operator — `*` `&` `|` `<` `>` `(` `)`
+— is also a shell metacharacter, and an unquoted `hex2hex '1000*4'` is a glob
+error rather than a number. A leading unary minus needs `--`:
+
+```console
+$ hex2hex -- '-5+3'
+-2
+```
+
+**Subtraction is spelled with a space.** A `-` with digits hard up against it
+on both sides is punctuation inside one value, not an operator:
+
+```console
+$ hex2hex '4500 - 4438'
+c8
+$ hex2hex '4500-4438'
+from2to: '4500-4438': a '-' between two digits is part of the value, not
+subtraction (a UUID or a MAC address is written that way, and would otherwise
+read as a sum); put spaces around it to subtract
+```
+
+The rule exists because hex-shaped identifiers are punctuated with dashes and
+every other character in them is a hex digit, so the dash is the only thing
+that tells them apart from a chain of subtractions:
+
+```console
+$ hex2dec 550e8400-e29b-41d4-a716-446655440000     # a UUID, not a sum
+$ hex2dec 00-11-22-33-44-55                        # a MAC address, not a sum
+```
+
+Both are an error, as they were before arithmetic existed. Answering them with
+a plausible number and an exit status of zero is the one thing this tool will
+not do. Only `-` needs the rule — nothing is written with a `+` in the middle
+of it, so `4438+1a` needs no spaces.
+
+The operators are C's, and so is their precedence — loosest first:
+
+| | Operators |
+|---|---|
+| loosest | `\|` |
+| | `^` (exclusive or, **not** a power) |
+| | `&` |
+| | `<<` `>>` |
+| | `+` `-` |
+| | `*` `/` `%` |
+| tightest | unary `-` `~`, then `( )` |
+
+Shifts binding looser than `+` is a famous C trap — `1<<2+3` is 32, not 7 — and
+it is reproduced deliberately. The point of this is to agree with the code you
+are reading, not to have better opinions than it.
+
+Division truncates toward zero, so `-7/2` is `-3`, which is what the debugger
+next to you says.
+
+A prefix never overrides the source base. `0b1` in hex is `0xb1` — `b` is a hex
+digit — and it means the same thing on its own as it does inside an expression:
+
+```console
+$ hex2dec 0b1
+177
+$ hex2dec '0b1+0'
+177
+```
+
+That is the whole rule, and it is worth stating plainly because the alternative
+is worse. In hex, `0d26` is already the perfectly good number `0x0d26`; letting
+a prefix win would mean the tool silently choosing one of two readings of your
+address. To add decimal 26 to a hex address, write `1a`.
+
+### Negatives, and `--word` as a register
+
+Without `--word` the arithmetic is signed and arbitrarily large, so a negative
+result simply prints with a sign:
+
+```console
+$ hex2hex '4438-4500'
+-c8
+$ hex2dec '1-5'
+-4
+```
+
+With `--word N` the whole thing happens in an unsigned **N-byte register**
+instead, wrapping after every operation — which is what the 16-bit machine you
+are looking at actually does:
+
+```console
+$ hex2hex --word 2 '4438-4500'
+ff38
+$ hex2hex --word 2 '~0'
+ffff
+$ dec2hex --word 4 '0-1'
+ffffffff
+```
+
+In a register `>>` is a logical shift and `-x` is the two's complement; without
+one, `>>` sign-extends and `~x` is `-x-1`. The register width is also the
+written width, so the result is padded out to say how wide it is:
+
+```console
+$ hex2hex 'ff & 0f'
+f
+$ hex2hex --word 2 'ff & 0f'
+000f
+```
+
+This is the same `--word` that groups bytes for a byte-order swap, because it is
+the same claim about the same value — "this is a four-byte word". The two
+compose:
+
+```console
+$ ledec2hex --word 4 '1+1'
+2000000
+```
+
+A negative reaching something with no way to say so is an error, not a
+magnitude quietly standing in:
+
+```console
+$ hex2char '1-5'
+hex2char: '1-5' is negative, and char cannot express that; add --word N to wrap it to N bytes
+```
+
+### What is and is not an expression
+
+An operator character is the whole trigger, and every one of them was a hard
+error before this existed — so nothing that worked has changed meaning. A
+newline or a comma still separates values; a space does not:
+
+```console
+$ hex2dec ff 10          # no operator: two numbers, as always
+255
+16
+$ hex2hex '1+1, 2+2'     # two expressions
+2
+4
+```
+
+Only a **positional source** has expressions. `char2hex '1+1'` is still the hex
+of those three characters, because `char` has no digits to compute with. And
+`--strict` turns expression math off entirely, alongside the other leniencies,
+for when the input is meant to be pure data.
+
+Expressions are per line from a pipe, so `printf '1+1\n2+2\n' | hex2hex` gives
+two answers.
+
 ## Byte order
 
 Either half of a name can carry an `le` or `be` prefix. This is the part that
@@ -526,6 +698,9 @@ $ dec2char 128512
 
 A bad digit is an error and exits 1. `-k` downgrades it to a warning on stderr,
 skips the token, and exits 0 — you asked it to keep going.
+
+`--strict` also turns off [expression math](#arithmetic), and `--word` doubles
+as the register width there.
 
 ## Arbitrary size
 

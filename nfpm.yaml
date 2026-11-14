@@ -19,7 +19,7 @@ description: |
   variants such as lehex2dec for reading values out of a memory dump.
 vendor: kayfgit
 homepage: https://github.com/kayfgit/from2to
-license: MIT
+license: GPL-3.0-or-later
 
 contents:
   - src: stage/from2to

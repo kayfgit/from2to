@@ -3,7 +3,7 @@
 [![CI](https://github.com/kayfgit/from2to/actions/workflows/ci.yml/badge.svg)](https://github.com/kayfgit/from2to/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/from2to.svg)](https://crates.io/crates/from2to)
 [![docs.rs](https://img.shields.io/docsrs/from2to)](https://docs.rs/from2to)
-[![MIT](https://img.shields.io/crates/l/from2to.svg)](LICENSE)
+[![License](https://img.shields.io/crates/l/from2to.svg)](LICENSE)
 
 <img width="800" height="400" alt="from2to" src="https://github.com/user-attachments/assets/e93e4775-87fa-48f2-ba11-3e4f4a351fe5" />
 
@@ -730,4 +730,9 @@ behind the flags. `CHANGELOG.md` records what changed between releases.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Copyright (C) 2026 Kayf
+
+from2to is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE).

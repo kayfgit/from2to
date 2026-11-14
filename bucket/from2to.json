@@ -2,7 +2,7 @@
     "version": "0.5.0",
     "description": "Fast conversion at the terminal: hex2bin, dec2char, lehex2dec, and friends",
     "homepage": "https://github.com/kayfgit/from2to",
-    "license": "MIT",
+    "license": "GPL-3.0-or-later",
     "architecture": {
         "64bit": {
             "url": "https://github.com/kayfgit/from2to/releases/download/v0.5.0/from2to-0.5.0-x86_64-pc-windows-msvc.zip",

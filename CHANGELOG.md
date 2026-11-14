@@ -3,6 +3,12 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- from2to is now licensed under the GNU GPL v3 or later (GPL-3.0-or-later), copyright Kayf; it was MIT.
+
 ## [0.5.0] — 2026-09-03
 
 Arithmetic in the base you are already reading.
